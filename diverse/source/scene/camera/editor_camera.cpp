@@ -17,8 +17,8 @@ namespace diverse
         previous_curser_pos     = glm::vec3(0.0f);
         mouse_sensitivity      = 0.00001f;
         zoom_dampening_factor   = 0.00001f;
-        dampening_factor       = 0.00001f;
-        rotate_dampening_factor = 0.0000001f;
+        dampening_factor       = 0.00001f;  // Smooth keyboard movement
+        rotate_dampening_factor = 0.000001f;  // Smooth rotation
         camera_mode            = EditorCameraMode::ARCBALL;
         distance = 10.0f;
     }
@@ -44,6 +44,18 @@ namespace diverse
     void EditorCameraController::handle_mouse(maths::Transform& transform, float dt, float xpos, float ypos)
     {
         DS_PROFILE_FUNCTION();
+        
+        // Camera Mouse Controls:
+        // ARCBALL Mode:
+        //   - Right Mouse Button: Orbit camera around focal point
+        //   - Middle Mouse Button: Pan camera (translate view)
+        //   - Middle + Right Mouse Button: Pan camera (alternative)
+        //   - Mouse Scroll Wheel: Dolly/Zoom camera
+        // FLYCAM Mode:
+        //   - Right Mouse Button: FPS-style rotation
+        //   - Mouse Scroll Wheel: Move camera forward/backward
+        // TWODIM Mode:
+        //   - Middle Mouse Button: Pan camera in 2D
 
         // distance = glm::distance(transform.get_local_position(), focal_point);
 
@@ -62,10 +74,20 @@ namespace diverse
             if(Input::get().get_mouse_held(InputCode::MouseKey::ButtonMiddle))
             {
                 mouse_sensitivity = 0.1f;
+                
+                // Use camera's actual right and up directions for panning
+                // This works correctly for all 6 orthographic views
+                glm::vec3 right = transform.get_right_direction();
+                glm::vec3 up = transform.get_up_direction();
+                
                 glm::vec3 position = transform.get_local_position();
-                position.x -= (xpos - previous_curser_pos.x) /** camera->get_scale() */ * mouse_sensitivity * 0.5f;
-                position.y += (ypos - previous_curser_pos.y) /** camera->get_scale() */ * mouse_sensitivity * 0.5f;
+                position -= right * (xpos - previous_curser_pos.x) * mouse_sensitivity * 0.5f;
+                position += up * (ypos - previous_curser_pos.y) * mouse_sensitivity * 0.5f;
                 transform.set_local_position(position);
+                
+                // Also update ortho_view_center so switching views maintains the new position
+                ortho_view_center = position - transform.get_forward_direction() * ortho_view_distance;
+                
                 previous_curser_pos = glm::vec2(xpos, ypos);
             }
             else
@@ -119,10 +141,25 @@ namespace diverse
                     previous_curser_pos = stored_cursor_pos;
                 }
   
-                if (Input::get().get_mouse_held(InputCode::MouseKey::ButtonRight) )
+                // Check for Middle + Right mouse button combination for panning
+                bool middleAndRight = Input::get().get_mouse_held(InputCode::MouseKey::ButtonMiddle) && 
+                                     Input::get().get_mouse_held(InputCode::MouseKey::ButtonRight);
+                
+                if (middleAndRight)
                 {
+                    // MMB + RMB = Pan camera
+                    mouse_pan(transform, glm::vec2((xpos - previous_curser_pos.x), (ypos - previous_curser_pos.y)) * 0.001f);
+                }
+                else if (Input::get().get_mouse_held(InputCode::MouseKey::ButtonRight))
+                {
+                    // RMB only = Orbit camera
                     mouse_sensitivity = 0.0002f;
                     rotate_velocity = glm::vec2((xpos - previous_curser_pos.x), (ypos - previous_curser_pos.y)) * mouse_sensitivity * 10.0f;
+                }
+                else if (Input::get().get_mouse_held(InputCode::MouseKey::ButtonMiddle))
+                {
+                    // MMB only = Dolly camera (pan movement)
+                    mouse_pan(transform, glm::vec2((xpos - previous_curser_pos.x), (ypos - previous_curser_pos.y)) * 0.001f);
                 }
                 else
                 {
@@ -132,8 +169,6 @@ namespace diverse
                         Application::get().get_window()->set_mouse_position(stored_cursor_pos);
                     }
                 }
-                if (Input::get().get_mouse_held(InputCode::MouseKey::ButtonMiddle))
-                    mouse_pan(transform, glm::vec2((xpos - previous_curser_pos.x), (ypos - previous_curser_pos.y)) * 0.001f);
             }
 
             if(glm::length(rotate_velocity) > maths::M_EPSILON || pitch_delta > maths::M_EPSILON || yaw_delta > maths::M_EPSILON)
@@ -185,6 +220,22 @@ namespace diverse
 
     void EditorCameraController::handle_keyboard(maths::Transform& transform, float dt)
     {
+        // Camera Keyboard Controls:
+        // ARCBALL Mode:
+        //   - W/S Keys: Dolly camera forwards/backwards
+        //   - A/D Keys: Strafe camera left/right
+        //   - Q/E Keys: Move camera upward/downward (world space)
+        //   - Shift Key: Accelerate movement (3x speed)
+        // FLYCAM Mode (only when RMB held):
+        //   - W/S Keys: Move forward/backward
+        //   - A/D Keys: Strafe left/right
+        //   - Q/E Keys: Move down/up (camera space)
+        //   - Shift Key: Accelerate movement (10x speed)
+        //   - Alt Key: Slow movement (0.5x speed)
+        // TWODIM Mode:
+        //   - W/S Keys: Move up/down
+        //   - A/D Keys: Move left/right
+        
         if(camera_mode == EditorCameraMode::TWODIM)
         {
             glm::vec3 up = glm::vec3(0, 1, 0), right = glm::vec3(1, 0, 0);
@@ -220,9 +271,62 @@ namespace diverse
                 transform.set_local_position(position);
             }
         }
+        else if(camera_mode == EditorCameraMode::ARCBALL)
+        {
+            // Shift key acceleration
+            float multiplier = 1.0f;
+            if(Input::get().get_key_held(InputCode::Key::LeftShift))
+            {
+                multiplier = 3.0f;  // Accelerate movement
+            }
+
+            float speed = multiplier * dt * camera_speed;
+
+            // W/S keys - Dolly camera forwards/backwards
+            if(Input::get().get_key_held(InputCode::Key::W))
+            {
+                velocity -= transform.get_forward_direction() * speed;
+            }
+
+            if(Input::get().get_key_held(InputCode::Key::S))
+            {
+                velocity += transform.get_forward_direction() * speed;
+            }
+
+            // A/D keys - Strafe camera left/right
+            if(Input::get().get_key_held(InputCode::Key::A))
+            {
+                velocity -= transform.get_right_direction() * speed;
+            }
+
+            if(Input::get().get_key_held(InputCode::Key::D))
+            {
+                velocity += transform.get_right_direction() * speed;
+            }
+
+            // Q/E keys - Move camera up/down
+            if(Input::get().get_key_held(InputCode::Key::Q))
+            {
+                velocity -= glm::vec3(0.0f, 1.0f, 0.0f) * speed;  // World up direction
+            }
+
+            if(Input::get().get_key_held(InputCode::Key::E))
+            {
+                velocity += glm::vec3(0.0f, 1.0f, 0.0f) * speed;  // World up direction
+            }
+
+            // Apply velocity to camera position and focal point
+            if(glm::length(velocity) > maths::M_EPSILON)
+            {
+                glm::vec3 position = transform.get_local_position();
+                position += velocity * dt;
+                focal_point += velocity * dt;  // Move focal point with camera
+                transform.set_local_position(position);
+                velocity = velocity * pow(dampening_factor, dt);
+            }
+        }
         else if(camera_mode == EditorCameraMode::FLYCAM)
         {
-
             float multiplier = 1.0f;
 
             if(Input::get().get_key_held(InputCode::Key::LeftShift))
@@ -287,7 +391,7 @@ namespace diverse
         const float y       = glm::min(float(1080) / 1000.0f, 2.4f); // max = 2.4f
         const float yFactor = 0.0366f * (y * y) - 0.1778f * y + 0.3021f;
 
-        return { xFactor * camera_speed / 20.0f, yFactor * camera_speed / 20.0f};
+        return { xFactor * camera_speed / 40.0f, yFactor * camera_speed / 40.0f};
     }
 
     float EditorCameraController::get_rotation_speed() const
@@ -305,9 +409,16 @@ namespace diverse
     }
     void EditorCameraController::mouse_pan(maths::Transform& transform, const glm::vec2& delta)
     {
+        // Apply shift key acceleration for faster panning
+        float multiplier = 1.0f;
+        if(Input::get().get_key_held(InputCode::Key::LeftShift))
+        {
+            multiplier = 3.0f;  // Accelerate panning
+        }
+        
         auto [xSpeed, ySpeed] = pan_speed();
-        focal_point -= transform.get_right_direction() * std::clamp(delta.x, -100.0f, 100.0f) * xSpeed * distance;
-        focal_point += transform.get_up_direction() * std::clamp(delta.y, -100.0f, 100.0f) * ySpeed * distance;
+        focal_point -= transform.get_right_direction() * std::clamp(delta.x, -100.0f, 100.0f) * xSpeed * distance * multiplier;
+        focal_point += transform.get_up_direction() * std::clamp(delta.y, -100.0f, 100.0f) * ySpeed * distance * multiplier;
         transform.set_local_position(calculate_position(transform));
     }
 
@@ -326,14 +437,21 @@ namespace diverse
         }
         if( delta != 0 )
         {
-            distance -= delta * get_zoom_speed();
+            // Apply shift key acceleration for faster zoom
+            float multiplier = 1.0f;
+            if(Input::get().get_key_held(InputCode::Key::LeftShift))
+            {
+                multiplier = 3.0f;  // Accelerate zoom
+            }
+            
+            distance -= delta * get_zoom_speed() * multiplier;
             const glm::vec3 forwardDir = transform.get_forward_direction();
             //if(distance < 1.0f)
             //{
             //    //focal_point += forwardDir * distance;
             //    distance = 1.0f;
             //}
-            position_delta += delta * get_zoom_speed() * forwardDir;
+            position_delta += delta * get_zoom_speed() * multiplier * forwardDir;
         }
     }
 
@@ -380,10 +498,16 @@ namespace diverse
         }
         else
         {
+            // Apply shift key acceleration for faster scroll zoom
+            float multiplier = 1.0f;
+            if(Input::get().get_key_held(InputCode::Key::LeftShift))
+            {
+                multiplier = 3.0f;  // Accelerate zoom
+            }
 
             if(offset != 0.0f)
             {
-                zoom_velocity -= dt * offset * 10.0f;
+                zoom_velocity -= dt * offset * 10.0f * multiplier;
             }
 
             if(!maths::Equals(zoom_velocity, 0.0f))
@@ -424,82 +548,100 @@ namespace diverse
         focal_point = camera_pos - transform.get_forward_direction() * distance;
         //+ transform.get_right_direction() * distance  - transform.get_up_direction() * distance;
     }
+    
+    void EditorCameraController::init_ortho_view_from_current(const maths::Transform& transform)
+    {
+        // Calculate the center point that the current camera is looking at
+        glm::vec3 forward = transform.get_forward_direction();
+        glm::vec3 camera_pos = transform.get_local_position();
+        
+        // Use focal_point if available (for ARCBALL mode)
+        if (glm::length(focal_point) > 0.01f && distance > 0.1f)
+        {
+            // Use the existing focal_point from ARCBALL mode
+            ortho_view_center = focal_point;
+            ortho_view_distance = distance;
+        }
+        else
+        {
+            // Calculate from current position and forward direction
+            // Use a reasonable default distance
+            ortho_view_distance = 10.0f;
+            ortho_view_center = camera_pos - forward * ortho_view_distance;
+        }
+    }
+    
+    void EditorCameraController::sync_focal_point_from_ortho_view(const maths::Transform& transform)
+    {
+        // Sync focal_point and distance from ortho_view data
+        // This is called when switching back to ARCBALL mode
+        focal_point = ortho_view_center;
+        distance = ortho_view_distance;
+    }
     void EditorCameraController::set_front_view(maths::Transform& transform)
     {
-        // Front view: looking along negative Z-axis
+        // Front view: looking along negative Z-axis (toward -Z)
+        // Camera position: ortho_view_center + (0, 0, +distance)
         glm::quat rotation = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
         transform.set_local_orientation(rotation);
         
-        // Update camera position for arcball mode
-        if (camera_mode == EditorCameraMode::ARCBALL)
-        {
-            transform.set_local_position(calculate_position(transform));
-        }
+        glm::vec3 new_position = ortho_view_center + glm::vec3(0.0f, 0.0f, ortho_view_distance);
+        transform.set_local_position(new_position);
     }
 
     void EditorCameraController::set_back_view(maths::Transform& transform)
     {
-        // Back view: looking along positive Z-axis (rotate 180 degrees around Y-axis)
+        // Back view: looking along positive Z-axis (toward +Z)
+        // Camera position: ortho_view_center + (0, 0, -distance)
         glm::quat rotation = glm::angleAxis(glm::pi<float>(), glm::vec3(0.0f, 1.0f, 0.0f));
         transform.set_local_orientation(rotation);
         
-        // Update camera position for arcball mode
-        if (camera_mode == EditorCameraMode::ARCBALL)
-        {
-            transform.set_local_position(calculate_position(transform));
-        }
+        glm::vec3 new_position = ortho_view_center + glm::vec3(0.0f, 0.0f, -ortho_view_distance);
+        transform.set_local_position(new_position);
     }
 
     void EditorCameraController::set_left_view(maths::Transform& transform)
     {
-        // Left view: looking along positive X-axis (rotate 90 degrees around Y-axis)
-        glm::quat rotation = glm::angleAxis(glm::pi<float>() / 2.0f, glm::vec3(0.0f, 1.0f, 0.0f));
+        // Left view: camera on left side looking toward +X (toward center)
+        // Camera position: ortho_view_center + (-distance, 0, 0)
+        glm::quat rotation = glm::angleAxis(-glm::pi<float>() / 2.0f, glm::vec3(0.0f, 1.0f, 0.0f));
         transform.set_local_orientation(rotation);
         
-        // Update camera position for arcball mode
-        if (camera_mode == EditorCameraMode::ARCBALL)
-        {
-            transform.set_local_position(calculate_position(transform));
-        }
+        glm::vec3 new_position = ortho_view_center + glm::vec3(-ortho_view_distance, 0.0f, 0.0f);
+        transform.set_local_position(new_position);
     }
 
     void EditorCameraController::set_right_view(maths::Transform& transform)
     {
-        // Right view: looking along negative X-axis (rotate -90 degrees around Y-axis)
-        glm::quat rotation = glm::angleAxis(-glm::pi<float>() / 2.0f, glm::vec3(0.0f, 1.0f, 0.0f));
+        // Right view: camera on right side looking toward -X (toward center)
+        // Camera position: ortho_view_center + (+distance, 0, 0)
+        glm::quat rotation = glm::angleAxis(glm::pi<float>() / 2.0f, glm::vec3(0.0f, 1.0f, 0.0f));
         transform.set_local_orientation(rotation);
         
-        // Update camera position for arcball mode
-        if (camera_mode == EditorCameraMode::ARCBALL)
-        {
-            transform.set_local_position(calculate_position(transform));
-        }
+        glm::vec3 new_position = ortho_view_center + glm::vec3(ortho_view_distance, 0.0f, 0.0f);
+        transform.set_local_position(new_position);
     }
 
     void EditorCameraController::set_top_view(maths::Transform& transform)
     {
-        // Top view: looking along negative Y-axis (rotate -90 degrees around X-axis)
+        // Top view: looking along negative Y-axis (toward -Y, from top)
+        // Camera position: ortho_view_center + (0, +distance, 0)
         glm::quat rotation = glm::angleAxis(-glm::pi<float>() / 2.0f, glm::vec3(1.0f, 0.0f, 0.0f));
         transform.set_local_orientation(rotation);
         
-        // Update camera position for arcball mode
-        if (camera_mode == EditorCameraMode::ARCBALL)
-        {
-            transform.set_local_position(calculate_position(transform));
-        }
+        glm::vec3 new_position = ortho_view_center + glm::vec3(0.0f, ortho_view_distance, 0.0f);
+        transform.set_local_position(new_position);
     }
 
     void EditorCameraController::set_buttom_view(maths::Transform& transform)
     {
-        // Bottom view: looking along positive Y-axis (rotate 90 degrees around X-axis)
+        // Bottom view: looking along positive Y-axis (toward +Y, from bottom)
+        // Camera position: ortho_view_center + (0, -distance, 0)
         glm::quat rotation = glm::angleAxis(glm::pi<float>() / 2.0f, glm::vec3(1.0f, 0.0f, 0.0f));
         transform.set_local_orientation(rotation);
         
-        // Update camera position for arcball mode
-        if (camera_mode == EditorCameraMode::ARCBALL)
-        {
-            transform.set_local_position(calculate_position(transform));
-        }
+        glm::vec3 new_position = ortho_view_center + glm::vec3(0.0f, -ortho_view_distance, 0.0f);
+        transform.set_local_position(new_position);
     }
 
 }

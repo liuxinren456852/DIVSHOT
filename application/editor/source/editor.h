@@ -12,6 +12,10 @@
 #include <maths/rect.h>
 #include <imgui/imgui.h>
 #include <scene/entity.h>
+#include <queue>
+#include <functional>
+#include <mutex>
+#include <unordered_set>
 
 namespace diverse
 { 
@@ -194,18 +198,51 @@ namespace diverse
 
         Camera* get_camera() const
         {
-            return editor_camera.get();
+            if (editor_camera_entity != entt::null && get_current_scene())
+            {
+                auto& reg = get_current_scene()->get_registry();
+                if (reg.valid(editor_camera_entity))
+                {
+                    return reg.try_get<Camera>(editor_camera_entity);
+                }
+            }
+            return nullptr;
         }
 
-        EditorCameraController& get_editor_camera_controller()
+        EditorCameraController* get_editor_camera_controller()
         {
-            return editor_camera_controller;
+            if (editor_camera_entity != entt::null && get_current_scene())
+            {
+                auto& reg = get_current_scene()->get_registry();
+                if (reg.valid(editor_camera_entity))
+                {
+                    return reg.try_get<EditorCameraController>(editor_camera_entity);
+                }
+            }
+            return nullptr;
         }
 
-        maths::Transform& get_editor_camera_transform()
+        maths::Transform* get_editor_camera_transform()
         {
-            return editor_camera_transform;
+            if (editor_camera_entity != entt::null && get_current_scene())
+            {
+                auto& reg = get_current_scene()->get_registry();
+                if (reg.valid(editor_camera_entity))
+                {
+                    return reg.try_get<maths::Transform>(editor_camera_entity);
+                }
+            }
+            return nullptr;
         }
+        
+        entt::entity get_editor_camera_entity() const
+        {
+            return editor_camera_entity;
+        }
+        
+    public:
+        // Editor Camera entity is now public for hierarchy/inspector panels
+        entt::entity editor_camera_entity = entt::null;
 
         struct EditorSettings
         {
@@ -293,6 +330,7 @@ namespace diverse
         void export_cameras();
         void export_sparse_pointcloud();
         void train_splat_gaussian();
+        void run_train_gaussian(void* gs_scene);
     #endif
     protected:
         NONCOPYABLE(Editor)
@@ -315,13 +353,9 @@ namespace diverse
         FileBrowserPanel file_browser_panel;
         
         Camera* current_camera = nullptr;
-        EditorCameraController editor_camera_controller;
-        maths::Transform editor_camera_transform;
         float camera_transition_speed = 0.0f;
         bool is_transitioning_camera = false;
         glm::vec3 camera_destination;
-
-        SharedPtr<Camera> editor_camera = nullptr;
 
         std::string temp_scene_save_file_path;
         int auto_save_settings_time = 360000;
@@ -341,12 +375,23 @@ namespace diverse
         std::vector<std::string> splat_source_path;
         std::string     load_model_path;
         bool        is_train_gaussian = false;
+        std::unordered_set<entt::entity> train_thread_entities;  // Track which entities have training threads running
         bool        is_update_splat_rendering = false;
         bool        is_splat_edit = false;
         int         splat_update_freq = 100;
         int         current_train_view_id = -1;
         int         hovered_train_view_id = -1;
         std::shared_ptr<class Pivot> pivot;
+        
+#ifdef DS_SPLAT_TRAIN
+        // Training config update queue: submitted from render thread, executed in training thread
+        // Use void* to avoid incomplete type issues with forward declaration
+        std::queue<std::function<void(void*)>> gs_train_update_queue_;
+        std::mutex gs_train_queue_mutex_;
+    public:
+        void enqueue_gs_train_update(std::function<void(void*)> update_fn);
+    protected:
+#endif
     };
 
 }

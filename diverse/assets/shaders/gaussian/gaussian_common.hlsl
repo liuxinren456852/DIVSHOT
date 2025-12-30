@@ -15,7 +15,7 @@
 struct Gaussian
 {
     float4 position;         // Gaussian position
-    float4 rotation_scale;   // rotation, scale, and opacity
+    uint4 rotation_scale;   // rotation, scale, and opacity
 };
 
 struct PackedVertexSH
@@ -83,6 +83,10 @@ float4 unpack_half4(float2 v) {
     return float4(x, y, z, w);
 }
 
+float4 unpack_uint2(uint2 u) {
+    return float4(f16tof32(u.x), f16tof32(u.x >> 16), f16tof32(u.y), f16tof32(u.y >> 16));
+}
+
 uint setOpState(uint value, uint op_state) {
     return (value & 0xFFFFFF00) | (op_state & 0x000000FF);
 }
@@ -108,11 +112,19 @@ uint setTransformIndex(uint value, uint index) {
     return (value & 0x0000FFFF) | ((index << 16) & 0xFFFF0000);
 }
 
-uint FloatToSortableUint(float f)
+// uint FloatToSortableUint(float f)
+// {
+//     uint fu = asuint(f);
+//     uint mask = -((int)(fu >> 31)) | 0x80000000;
+//     return fu ^ mask;
+// }
+
+// encodes an fp32 into a uint32 that can be ordered
+uint encodeMinMaxFp32(float val)
 {
-    uint fu = asuint(f);
-    uint mask = -((int)(fu >> 31)) | 0x80000000;
-    return fu ^ mask;
+  uint bits = asuint(val);
+  bits ^= (int(bits) >> 31) | 0x80000000u;
+  return bits;
 }
 
 float relu(float x)

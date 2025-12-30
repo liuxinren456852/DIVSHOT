@@ -1,6 +1,10 @@
  #include "tiny_gsplat.hpp"
 #include <load-spz.h>
 
+#ifdef HAS_TINYSOG
+// tinysog must be included before namespace tinygsplat to avoid namespace nesting
+#include <tinysog/tinysog.h>
+#endif
 // #include <tinyply.h>
  namespace tinygsplat
  {
@@ -30,147 +34,14 @@
 		 return sqrt((x2 - x1) * (x2 - x1));
 	 }
 
-	 void updateCentersCpu(
-		 const float* values,
-		 const int* ids,
-		 float* centers,
-		 int* center_sizes,
-		 const int n_values,
-		 const int n_centers)
-	 {
-		 const auto num_threads = 256;
-		 std::vector<std::thread> threads;
-		 const int block = (n_values + num_threads - 1) / num_threads;
-		 std::mutex cmutex;
-		 parallel_for(0, block, [&](int i) {
-			 int start_idx = i * num_threads;
-			 int end_idx = (i == block - 1) ? n_values : start_idx + num_threads;
-
-			 std::vector<float> block_center_sums(n_centers, 0.0f);
-			 std::vector<int> block_center_sizes(n_centers, 0);
-
-			 for (int idx = start_idx; idx < end_idx; ++idx) {
-				 int clust_id = ids[idx];
-				 block_center_sums[clust_id] += values[idx];
-				 block_center_sizes[clust_id] += 1;
-			 }
-
-			 for (int j = 0; j < n_centers; ++j) {
-				 std::lock_guard<std::mutex> mutex_guard(cmutex);
-				 centers[j] += block_center_sums[j];
-				 center_sizes[j] += block_center_sizes[j];
-			 }
-			 });
-	 }
-
-	 void updateIdsCpu(
-		 const float* values,
-		 int* ids,
-		 const float* centers,
-		 const int n_values,
-		 const int n_centers)
-	 {
-		 const auto num_threads = 256;
-		 std::vector<std::thread> threads;
-		 const int block = (n_values + num_threads - 1) / num_threads;
-		 parallel_for(0, block, [&](int i) {
-			 int start_idx = i * num_threads;
-			 int end_idx = (i == block - 1) ? n_values : start_idx + num_threads;
-			 for (int idx = start_idx; idx < end_idx; ++idx) {
-				 float min_dist = std::numeric_limits<float>::infinity();
-				 int closest_centroid = 0;
-
-				 for (int j = 0; j < n_centers; ++j) {
-					 float dist = distancePoint(values[idx], centers[j]);
-					 if (dist < min_dist) {
-						 min_dist = dist;
-						 closest_centroid = j;
-					 }
-				 }
-
-				 ids[idx] = closest_centroid;
-			 }
-			 });
-	 }
-
-	 std::tuple<std::vector<int>, std::vector<float>>  kmeans_cluster1(
-		 const std::vector<float>& values,
-		 const std::vector<float>& centers,
-		 const float tol,
-		 const int max_iterations)
-	 {
-		 const int n_values = values.size();
-		 const int n_centers = centers.size();
-		 std::vector<int> ids(n_values);
-		 std::vector<float> new_centers(n_centers, 0.0f);
-		 std::vector<float> old_centers(n_centers, 0.0f);
-		 std::vector<int> center_sizes(n_centers, 0);
-		 new_centers = centers;
-		 for (int i = 0; i < max_iterations; ++i)
-		 {
-			 updateIdsCpu(
-				 values.data(),
-				 ids.data(),
-				 new_centers.data(),
-				 n_values,
-				 n_centers);
-			 old_centers = new_centers;
-			 parallel_for<size_t>(0, new_centers.size(), [&](size_t p) {
-				 new_centers[p] = 0;
-				 center_sizes[p] = 0;
-				 });
-			 updateCentersCpu(
-				 values.data(),
-				 ids.data(),
-				 new_centers.data(),
-				 center_sizes.data(),
-				 n_values,
-				 n_centers);
-
-			 float center_shift = 0;
-			 for (auto j = 0; j < new_centers.size(); j++)
-			 {
-				 new_centers[j] /= center_sizes[j];
-				 if (std::isnan(new_centers[j]))
-					 new_centers[j] = 0.0f;
-				 center_shift += std::abs(old_centers[j] - new_centers[j]);
-			 }
-			 if (center_shift < tol)
-				 break;
-		 }
-		 updateIdsCpu(
-			 values.data(),
-			 ids.data(),
-			 new_centers.data(),
-			 n_values,
-			 n_centers);
-
-		 return std::make_tuple(ids, new_centers);
-	 }
-
-	 auto generateCodeBook(const std::vector<float> values, std::function<std::vector<float>(const std::vector<float>& x)>&& inverseActiveFn, int numClusters, float tol = 0.0001f) -> CodeBook
-	 {
-		 std::random_device rd;
-		 std::mt19937 gen(rd());
-		 std::uniform_int_distribution<> distrib(0, values.size()-1);
-
-		 std::vector<float> centers(numClusters);
-		 for (size_t i = 0; i < numClusters; ++i)
-			 centers[i] = values[distrib(gen)];
-		 auto [ids, newCenters] = kmeans_cluster1(values, centers, tol, 500);
-		 std::vector<uint8_t> u8ids(ids.size());
-#pragma omp parallel for
-		 for (auto i = 0; i < ids.size(); i++) u8ids[i] = ids[i];
-		 auto invCenters = inverseActiveFn(newCenters);
-		 return CodeBook{ u8ids, invCenters };
-	 }
-
 	 bool	save_ply(const std::string& file_path,
 		 const std::vector<glm::vec3>& pos,
 		 const std::vector<glm::vec3>& scales,
-		 const std::vector<std::array<f32, 48>>& shs,
+		 const std::vector<std::array<f32, 3>>& shs_0,
+		 const std::vector<std::array<f32, 45>>& shs_n,
 		 const std::vector<glm::vec4>& rot,
-		 const std::vector<f32>& opacities)
+		 const std::vector<f32>& opacities,
+		 bool antialiased)
 	 {
 		 std::ofstream outfile(file_path, std::ios_base::binary);
 
@@ -184,7 +55,9 @@
 		 outfile << buff;
 		 buff = "format binary_little_endian 1.0\n";
 		 outfile << buff;
-		 outfile << "comment generated by spaltX\n";
+		 outfile << "comment generated by divshot\n";
+		 if(antialiased)
+		 	outfile << "comment divshot.anti_aliasing=1\n";
 		 std::string line = "element vertex " + std::to_string(pos.size()) + "\n";
 		 outfile << line;
 
@@ -222,14 +95,17 @@
 			 points[i].rot = rot[i];
 			 points[i].scale = scales[i];
 
-			 points[i].shs[0] = shs[i][0];
-			 points[i].shs[1] = shs[i][1];
-			 points[i].shs[2] = shs[i][2];
-			 for (int j = 1; j < 16; j++)
+			 // DC color (sh0)
+			 points[i].shs[0] = shs_0[i][0];
+			 points[i].shs[1] = shs_0[i][1];
+			 points[i].shs[2] = shs_0[i][2];
+			 
+			 // Higher-order SH (shN): shs_n is interleaved [sh1_R, sh1_G, sh1_B, sh2_R, sh2_G, sh2_B, ...]
+			 for (int j = 0; j < 15; j++)
 			 {
-				 points[i].shs[(j - 1) + 3] = shs[i][j * 3 + 0];
-				 points[i].shs[(j - 1) + 18] = shs[i][j * 3 + 1];
-				 points[i].shs[(j - 1) + 33] = shs[i][j * 3 + 2];
+				 points[i].shs[j + 3] = shs_n[i][j * 3 + 0];   // R channel
+				 points[i].shs[j + 18] = shs_n[i][j * 3 + 1];  // G channel
+				 points[i].shs[j + 33] = shs_n[i][j * 3 + 2];  // B channel
 			 }
 		 });
 		 outfile.write(reinterpret_cast<char*>(points.data()), sizeof(RichPoint) * points.size());
@@ -240,7 +116,8 @@
 	 bool	save_splat(const std::string& file_path,
 		 const std::vector<glm::vec3>& pos,
 		 const std::vector<glm::vec3>& scales,
-		 const std::vector<std::array<f32, 48>>& shs,
+		 const std::vector<std::array<f32, 3>>& shs_0,
+		 const std::vector<std::array<f32, 45>>& shs_n,
 		 const std::vector<glm::vec4>& rot,
 		 const std::vector<f32>& opacities)
 	 {
@@ -257,10 +134,10 @@
 			 dataView.setFloat32(off + 16, scale.y);
 			 dataView.setFloat32(off + 20, scale.z);
 
-			 // dataView.setUint32(off + 24, packColor(shs[i][0], shs[i][1], shs[i][2], opacities[i]));
-			 auto f_dc_0 = shs[i][0];
-			 auto f_dc_1 = shs[i][1];
-			 auto f_dc_2 = shs[i][2];
+			 // .splat format only supports DC color (sh0), not higher-order SH
+			 auto f_dc_0 = shs_0[i][0];
+			 auto f_dc_1 = shs_0[i][1];
+			 auto f_dc_2 = shs_0[i][2];
 			 const auto SH_C0 = 0.28209479177387814;
 			 dataView.setUint8(off + 24, (u8)glm::clamp<f32>((0.5 + SH_C0 * f_dc_0) * 255, 0, 255));
 			 dataView.setUint8(off + 25, (u8)glm::clamp<f32>((0.5 + SH_C0 * f_dc_1) * 255, 0, 255));
@@ -290,9 +167,11 @@
 	 bool	save_compress_ply(const std::string& file_path,
 		 const std::vector<glm::vec3>& pos,
 		 const std::vector<glm::vec3>& scales,
-		 const std::vector<std::array<f32, 48>>& shs,
+		 const std::vector<std::array<f32, 3>>& shs_0,
+		 const std::vector<std::array<f32, 45>>& shs_n,
 		 const std::vector<glm::vec4>& rot,
-		 const std::vector<f32>& opacities)
+		 const std::vector<f32>& opacities,
+		 bool antialiased)
 	 {
 		 auto numSplats = pos.size();
 		 u64 numChunks = (numSplats + 255) / 256;
@@ -330,7 +209,8 @@
 		 parallel_for<size_t>(0, numChunks, [&](size_t i) {
 			 SplatChunk chunk(indices, i * 256, (i + 1) * 256);
 
-			 auto [pmin, pmax, smin, smax] = chunk.pack(pos, scales, rot, shs, opacities);
+			 // Compressed PLY only stores DC color, not higher-order SH
+			 auto [pmin, pmax, smin, smax] = chunk.pack(pos, scales, rot, shs_0, opacities);
 
 			 dataView.setFloat32(i * 12 * 4 + 0, pmin.x);
 			 dataView.setFloat32(i * 12 * 4 + 4, pmin.y);
@@ -368,7 +248,9 @@
 		 outfile << buff;
 		 buff = "format binary_little_endian 1.0\n";
 		 outfile << buff;
-		 outfile << "comment generated by diverseshot\n";
+		 outfile << "comment generated by divshot\n";
+		 if(antialiased)
+		 	outfile << "comment divshot.anti_aliasing=1\n";
 		 std::string line = "element chunk " + std::to_string(numChunks) + "\n";
 		 outfile << line;
 
@@ -393,8 +275,8 @@
 		const std::string& file_path,
 		const std::vector<glm::vec3>& pos,
 		const std::vector<glm::vec3>& scales,
-		const std::vector<glm::vec3>& featureDc,
-		const std::vector<std::array<glm::vec3, 15>>& featureRest,
+		const std::vector<std::array<float, 3>>& shs_0,
+		const std::vector<std::array<float, 45>>& shs_n,
 		const std::vector<glm::vec4>& rot,
 		const std::vector<f32>& opacities,
 		const std::vector<uint8_t>& degrees,
@@ -512,9 +394,9 @@
 					else {
 						dataView.setData(offset + splatId * stride, (u8*)&pos[pointId], sizeof(glm::vec3));
 					}
-					dataView.setData(offset + splatId * stride + xyzSize, (u8*)&featureDc[pointId], sizeof(glm::vec3));
+					dataView.setData(offset + splatId * stride + xyzSize, (u8*)&shs_0[pointId], sizeof(glm::vec3));
 					for (auto j = 0; j < coeffsNum; j++)
-						dataView.setData(offset + splatId * stride + xyzSize + (j + 1) * sizeof(glm::vec3), (u8*)&featureRest[pointId][j], sizeof(glm::vec3));
+						dataView.setData(offset + splatId * stride + xyzSize + (j + 1) * sizeof(glm::vec3), (u8*)&shs_n[pointId][j], sizeof(glm::vec3));
 					dataView.setFloat32(offset + splatId * stride + scaleOff + 0 * sizeof(float), opacities[pointId]);
 					dataView.setFloat32(offset + splatId * stride + scaleOff + 1 * sizeof(float), scales[pointId].x);
 					dataView.setFloat32(offset + splatId * stride + scaleOff + 2 * sizeof(float), scales[pointId].y);
@@ -624,7 +506,8 @@
 	}
 
 	bool load_ply(const std::string& file_path,
-		std::vector<RichPoint>& points)
+		std::vector<RichPoint>& points,
+		bool& antialiased)
 	{
 		u64 numSplats = 0;
 		std::ifstream infile(file_path, std::ios_base::binary);
@@ -654,6 +537,9 @@
 		while (std::getline(infile, buff)) {
 			if (buff.compare("end_header") == 0)
 				break;
+			if(buff.find("anti_aliasing=1") != std::string::npos){
+				antialiased = true;
+			}
 			if (buff.find("element vertex") != std::string::npos) {
 				std::stringstream ss(buff);
 				ss >> dummy >> dummy >> numSplats;
@@ -754,7 +640,8 @@
 	}
 
 	bool load_compress_ply(const std::string& file_path,
-		std::vector<RichPoint>& points)
+		std::vector<RichPoint>& points,
+		bool& antialiased)
 	{
 		u64 numSplats;
 		std::ifstream infile(file_path, std::ios_base::binary);
@@ -779,6 +666,9 @@
 				std::stringstream ss(buff);
 				ss >> dummy >> dummy >> numChunks;
 			}
+			if(buff.find("anti_aliasing=1") != std::string::npos){
+				antialiased = true;
+			}
 		}
 		std::cout << std::format("Loading {} Gaussian splats chunk , {} count\n", numChunks, numSplats);
 		if (numSplats <= 0 || numChunks <= 0) return false;
@@ -796,7 +686,7 @@
 		parallel_for<size_t>(0, numChunks, [&](size_t i) {
 			SplatChunk chunk(indices, i * 256, (i + 1) * 256);
 			chunk.unpack(dataView, i, numChunks, points);
-			});
+		});
 		return true;
 	}
 
@@ -981,8 +871,8 @@
 		const std::string& file_path,
 		const std::vector<glm::vec3>& pos,
 		const std::vector<glm::vec3>& scales,
-		const std::vector<glm::vec3>& featureDc,
-		const std::vector<std::array<glm::vec3, 15>>& featureRest,
+		const std::vector<std::array<float, 3>>& shs_0,
+		const std::vector<std::array<float, 45>>& shs_n,
 		const std::vector<glm::vec4>& rot,
 		const std::vector<f32>& opacities,
 		const std::vector<uint8_t>& degrees)
@@ -1078,16 +968,16 @@
 				glm::u8vec3 quatizedRot = glm::u8vec3(toUint8(q[1]), toUint8(q[2]), toUint8(q[3]));
 				dataView.setData(offset + splatId * stride + 3, (u8*)&quatizedRot, sizeof(glm::u8vec3));
 				dataView.setUint8(offset + splatId * stride + 6, quatizedOpacity);
-				glm::u8vec3 quantizeColors = glm::u8vec3(toUint8(featureDc[pointId].x * (colorScale * 255.0f) + (0.5f * 255.0f)),
-					toUint8(featureDc[pointId].y * (colorScale * 255.0f) + (0.5f * 255.0f)),
-					toUint8(featureDc[pointId].z * (colorScale * 255.0f) + (0.5f * 255.0f)));
+				glm::u8vec3 quantizeColors = glm::u8vec3(toUint8(shs_0[pointId][0] * (colorScale * 255.0f) + (0.5f * 255.0f)),
+					toUint8(shs_0[pointId][1] * (colorScale * 255.0f) + (0.5f * 255.0f)),
+					toUint8(shs_0[pointId][2] * (colorScale * 255.0f) + (0.5f * 255.0f)));
 				dataView.setData(offset + splatId * stride + 7, (u8*)(&quantizeColors), sizeof(glm::u8vec3));
 				constexpr int sh1Bits = 5;
 				constexpr int shRestBits = 4;
 				for (auto j = 0; j < coeffsNum * 3; j++)
 				{
 					u8 qsh;
-					float* rest = (float*)featureRest[pointId].data();
+					float* rest = (float*)shs_n[pointId].data();
 					if (j < 9)
 						qsh = quantizeSH(rest[j], 1 << (8 - sh1Bits));
 					else
@@ -1184,11 +1074,13 @@
 
 	bool load_spz_splats(
 		const std::string& file_path,
-		std::vector<RichPoint>& points)
+		std::vector<RichPoint>& points,
+		bool& antialiased)
 	{
 		bool load_ret = false;
 		try {
-			auto spz_pc = spz::loadSpz(file_path);
+			spz::UnpackOptions opts;
+			auto spz_pc = spz::loadSpz(file_path,opts);
 			points.resize(spz_pc.numPoints);
 			for (auto p = 0; p < spz_pc.numPoints; p++) {
 				points[p].opacity = spz_pc.alphas[p];
@@ -1199,12 +1091,13 @@
 				points[p].shs[1] = spz_pc.colors[p * 3 + 1];
 				points[p].shs[2] = spz_pc.colors[p * 3 + 2];
 				for (int j = 0; j < 15; j++) {
-					points[p].shs[j * 3 + 0 + 3] = spz_pc.sh[(p * 15 + j) * 3 + 0];
-					points[p].shs[j * 3 + 1 + 3] = spz_pc.sh[(p * 15 + j) * 3 + 1];
-					points[p].shs[j * 3 + 2 + 3] = spz_pc.sh[(p * 15 + j) * 3 + 2];
+					points[p].shs[j + 3] = spz_pc.sh[(p * 15 + j) * 3 + 0];   // sh1_r
+					points[p].shs[j + 18] = spz_pc.sh[(p * 15 + j) * 3 + 1];  // sh1_g  
+					points[p].shs[j + 33] = spz_pc.sh[(p * 15 + j) * 3 + 2];  // sh1_b
 				}
 			}
 			load_ret = true;
+			antialiased = spz_pc.antialiased;
 		}
 		catch (...) {
 			load_ret = false;
@@ -1216,9 +1109,11 @@
 		const std::string& file_path,
 		const std::vector<glm::vec3>& pos,
 		const std::vector<glm::vec3>& scales,
-		const std::vector<std::array<f32, 48>>& shs,
+		const std::vector<std::array<f32, 3>>& shs_0,
+		const std::vector<std::array<f32, 45>>& shs_n,
 		const std::vector<glm::vec4>& rot,
-		const std::vector<f32>& opacities
+		const std::vector<f32>& opacities,
+		bool antialiased
 	) {
 		spz::GaussianCloud spz_pc;
 		spz_pc.alphas = opacities;
@@ -1228,27 +1123,184 @@
 		spz_pc.scales.resize(scales.size() * 3);
 		spz_pc.colors.resize(scales.size() * 3);
 		spz_pc.shDegree = 3;
+		spz_pc.antialiased = antialiased;
 		spz_pc.sh.resize(45 * pos.size());
 		memcpy(spz_pc.positions.data(), pos.data(), pos.size() * 3 * sizeof(float));
 		//memcpy(spz_pc.rotations.data(), new_rot.data(), new_rot.size() * 4 * sizeof(float));
 		memcpy(spz_pc.scales.data(), scales.data(), scales.size() * 3 * sizeof(float));
 		for (auto p = 0; p < spz_pc.numPoints; p++) {
-			spz_pc.colors[p * 3 + 0] = shs[p][0];
-			spz_pc.colors[p * 3 + 1] = shs[p][1];
-			spz_pc.colors[p * 3 + 2] = shs[p][2];
+			// DC color (sh0)
+			spz_pc.colors[p * 3 + 0] = shs_0[p][0];
+			spz_pc.colors[p * 3 + 1] = shs_0[p][1];
+			spz_pc.colors[p * 3 + 2] = shs_0[p][2];
 			spz_pc.rotations[p * 4 + 0] = rot[p][1];
 			spz_pc.rotations[p * 4 + 1] = rot[p][2];
 			spz_pc.rotations[p * 4 + 2] = rot[p][3];
 			spz_pc.rotations[p * 4 + 3] = rot[p][0];
 		}
+		// Higher-order SH (shN): shs_n is interleaved [sh1_R, sh1_G, sh1_B, sh2_R, sh2_G, sh2_B, ...]
 		for (auto p = 0; p < spz_pc.numPoints; p++) {
 			for (auto j = 0; j < 15; j++) {
-				spz_pc.sh[(p * 15 + j) + 0] = shs[p][3 + j * 3];
-				spz_pc.sh[(p * 15 + j) + 1] = shs[p][3 + j * 3 + 1];
-				spz_pc.sh[(p * 15 + j) + 2] = shs[p][3 + j * 3 + 2];
+				spz_pc.sh[(p * 15 + j) * 3 + 0] = shs_n[p][j * 3 + 0];
+				spz_pc.sh[(p * 15 + j) * 3 + 1] = shs_n[p][j * 3 + 1];
+				spz_pc.sh[(p * 15 + j) * 3 + 2] = shs_n[p][j * 3 + 2];
 			}
 		}
-		return spz::saveSpz(spz_pc, file_path);
+	spz::PackOptions opts;
+	return spz::saveSpz(spz_pc, opts,file_path);
+}
+
+#ifdef HAS_TINYSOG
+
+bool save_sog(
+	const std::string& file_path,
+	const std::vector<glm::vec3>& pos,
+	const std::vector<glm::vec3>& scales,
+	const std::vector<std::array<f32, 3>>& shs_0,
+	const std::vector<std::array<f32, 45>>& shs_n,
+	const std::vector<glm::vec4>& rot,
+	const std::vector<f32>& opacities
+) {
+	try {
+		size_t count = pos.size();
+
+		// Convert opacity from logit space to [0,1] space
+		// RichPoint stores opacity in logit space, but tinysog encoder expects [0,1] space
+		std::vector<float> opacity_01(count);
+		for (size_t i = 0; i < count; ++i) {
+			opacity_01[i] = 1.0f / (1.0f + std::exp(-opacities[i]));  // sigmoid
+		}
+
+		// Create GaussianData structure - directly use vector data pointers
+		// Note: In RichPoint, glm::vec4 rot is indexed as [w,x,y,z] not [x,y,z,w]
+		// This matches tinysog's quaternion format [w,x,y,z], so direct copy works!
+		::tinysog::GaussianData data;
+		data.count = count;
+		data.means = const_cast<float*>(reinterpret_cast<const float*>(pos.data()));
+		data.rotations = const_cast<float*>(reinterpret_cast<const float*>(rot.data()));  // Direct copy - both [w,x,y,z]
+		data.scales = const_cast<float*>(reinterpret_cast<const float*>(scales.data()));
+		data.sh0 = const_cast<float*>(reinterpret_cast<const float*>(shs_0.data()));
+		data.shN = const_cast<float*>(reinterpret_cast<const float*>(shs_n.data()));
+		data.opacity = opacity_01.data();  // Use converted [0,1] space opacity
+		data.sh_degree = 3;
+		data.sh_num_coeffs = 15;
+		data.scene_scale = 1.0f;
+		data.is_cpu = true;
+
+		// Write SOG file with lossless quality
+		::tinysog::WriterOptions options;
+		options.bundle = true;
+		options.webp_quality = 100;  // Must be 100 (lossless) to preserve precision
+		options.iterations = 20;     // More iterations for better compression
+
+		auto result = ::tinysog::write_sog(file_path.c_str(), data, options);
+		
+		if (!result.has_value()) {
+			std::cerr << "Failed to save SOG: " << result.error() << std::endl;
+			return false;
+		}
+
+		return true;
+	}
+	catch (const std::exception& e) {
+		std::cerr << "Exception in save_sog: " << e.what() << std::endl;
 		return false;
 	}
+}
+
+bool load_sog(
+	const std::string& file_path,
+	std::vector<RichPoint>& points
+) {
+	try {
+		// Read SOG file
+		::tinysog::ReaderOptions options;
+		options.cpu_only = true;
+		options.validate_only = false;
+
+		auto result = ::tinysog::read_sog(file_path.c_str(), options);
+		if (!result.has_value()) {
+			std::cerr << "Failed to load SOG: " << result.error() << std::endl;
+			return false;
+		}
+
+		auto data = *result;
+		points.resize(data.count);
+
+		// Convert from tinysog format to RichPoint
+		for (size_t i = 0; i < data.count; ++i) {
+			// Position
+			points[i].pos.x = data.means[i * 3 + 0];
+			points[i].pos.y = data.means[i * 3 + 1];
+			points[i].pos.z = data.means[i * 3 + 2];
+
+		// Rotation: tinysog format is [w,x,y,z], glm::vec4 indexing is [0,1,2,3]
+		// In RichPoint, rot[0]=w, rot[1]=x, rot[2]=y, rot[3]=z (NOT the usual x,y,z,w!)
+		points[i].rot[0] = data.rotations[i * 4 + 0];  // w
+		points[i].rot[1] = data.rotations[i * 4 + 1];  // x
+		points[i].rot[2] = data.rotations[i * 4 + 2];  // y
+		points[i].rot[3] = data.rotations[i * 4 + 3];  // z
+
+		// Scale
+		points[i].scale.x = data.scales[i * 3 + 0];
+		points[i].scale.y = data.scales[i * 3 + 1];
+		points[i].scale.z = data.scales[i * 3 + 2];
+
+		// Opacity: convert from [0,1] space (tinysog) back to logit space (RichPoint)
+		float opacity_01 = data.opacity[i];
+		// Clamp to avoid log(0) or log(inf)
+		opacity_01 = std::clamp(opacity_01, 0.0001f, 0.9999f);
+		points[i].opacity = std::log(opacity_01 / (1.0f - opacity_01));  // logit (inverse sigmoid)
+
+		// Base color (sh0)
+		points[i].shs[0] = data.sh0[i * 3 + 0];
+		points[i].shs[1] = data.sh0[i * 3 + 1];
+		points[i].shs[2] = data.sh0[i * 3 + 2];
+
+		// Higher-order SH
+		// RichPoint.shs layout: [sh0_r, sh0_g, sh0_b, sh1_r, sh1_g, sh1_b, ..., sh15_r, sh15_g, sh15_b]
+		// tinysog shN layout: [sh1_r, sh1_g, sh1_b, sh2_r, sh2_g, sh2_b, ..., sh15_r, sh15_g, sh15_b]
+		// Both are interleaved R,G,B per coefficient - direct copy!
+		if (data.shN != nullptr && data.sh_num_coeffs > 0) {
+			const int num_values = std::min(45, data.sh_num_coeffs * 3);
+			for (int j = 0; j < num_values; ++j) {
+				points[i].shs[3 + j] = data.shN[i * data.sh_num_coeffs * 3 + j];
+			}
+		}
+		}
+
+		// Free the data allocated by tinysog
+		::tinysog::free_gaussian_data(data);
+
+		return true;
+	}
+	catch (const std::exception& e) {
+		std::cerr << "Exception in load_sog: " << e.what() << std::endl;
+		return false;
+	}
+}
+#else
+// Stub implementations when tinysog is not available
+bool save_sog(
+	const std::string& file_path,
+	const std::vector<glm::vec3>& pos,
+	const std::vector<glm::vec3>& scales,
+	const std::vector<std::array<f32, 3>>& shs_0,
+	const std::vector<std::array<f32, 45>>& shs_n,
+	const std::vector<glm::vec4>& rot,
+	const std::vector<f32>& opacities
+) {
+	std::cerr << "SOG support not compiled in. Please build with tinysog enabled." << std::endl;
+	return false;
+}
+
+bool load_sog(
+	const std::string& file_path,
+	std::vector<RichPoint>& points
+) {
+	std::cerr << "SOG support not compiled in. Please build with tinysog enabled." << std::endl;
+	return false;
+}
+#endif
+
  }

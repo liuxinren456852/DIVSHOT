@@ -1,0 +1,2 @@
+add_subdirectory(gsplatrast)
+add_subdirectory(gstrain)

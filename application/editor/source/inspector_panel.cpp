@@ -42,6 +42,8 @@
 #include <spdlog/fmt/bundled/format.h>
 #include <utility/process_utils.hpp>
 #include "pivot.h"
+#include <scene/camera/editor_camera.h>
+
 namespace MM
 {
 #define PropertySet(name, getter, setter)                \
@@ -758,6 +760,7 @@ namespace MM
             }
             old_color_adjustment = splat_color_adjustment;
         }
+        ImGuiHelper::Property("Antialiased", gaussian.mip_antialiased, "Whether use mip antialiased rendering");
         ImGui::Columns(1);
         ImGui::Separator();
         ImGui::PopStyleVar();
@@ -774,16 +777,20 @@ namespace MM
                 ImGui::TextUnformatted("DensifyStrategy");
                 ImGui::NextColumn();
                 ImGui::PushItemWidth(-1);
-                const char* densify_str[] = { "SplatADC", "SplatMCMC" };
+                const char* densify_str[] = { "SplatADC", "SplatMCMC","SplatADC+" };
                 if (ImGui::BeginCombo("densify", densify_str[gsTrain->getTrainConfig().densifyStrategy], 0)) // The second parameter is the label previewed before opening the combo.
                 {
-                    for (int n = 0; n < 2; n++) //now not support sparse grad
+                    for (int n = 0; n < 3; n++) //now not support sparse grad
                     {
                         bool is_selected = (n == gsTrain->getTrainConfig().densifyStrategy);
                         if (ImGui::Selectable(densify_str[n]))
                         {
-                            gsTrain->getTrainConfig().densifyStrategy = n;
-                            gsTrain->setDensifyStrategy(n);
+                            // Submit update to training thread via queue
+                            Editor::get_editor()->enqueue_gs_train_update([n](void* gs_ptr){
+                                auto* gs = static_cast<GaussianTrainerScene*>(gs_ptr);
+                                gs->getTrainConfig().densifyStrategy = n;
+                                gs->setDensifyStrategy(n);
+                            });
                         }
                         if (is_selected)
                             ImGui::SetItemDefaultFocus();
@@ -800,22 +807,60 @@ namespace MM
                         gsTrain->pauseTrain();
                 }
 
-                if(ImGuiHelper::Property("MaxIteraions", gsTrain->maxIteriaons(),3000,100000))
-                    gsTrain->getTrainConfig().refineStopIter = gsTrain->maxIteriaons() * 0.5f;
-                ImGuiHelper::Property("StopDensifyAt", gsTrain->getTrainConfig().refineStopIter,100, 100000, "Stop densify gaussians that are larger than after these many steps");
-                gsTrain->getTrainConfig().refineStopIter = std::max(gsTrain->getTrainConfig().refineStopIter, 1000);
+                int maxIter = gsTrain->maxIteriaons();
+                if(ImGuiHelper::Property("MaxIteraions", maxIter, 3000, 100000))
+                {
+                    Editor::get_editor()->enqueue_gs_train_update([maxIter](void* gs_ptr){
+                        auto* gs = static_cast<GaussianTrainerScene*>(gs_ptr);
+                        gs->maxIteriaons() = maxIter;
+                        gs->getTrainConfig().refineStopIter = maxIter * 0.5f;
+                    });
+                }
+                if(gsTrain->getTrainConfig().densifyStrategy == (int)(SplatDensifyType::SplatADCPlus))
+                {
+                    float growFraction = gsTrain->getTrainConfig().growFraction;
+                    if(ImGuiHelper::Property("GrowFraction", growFraction, 0.0f, 1.0f, 0.01f)) {
+                        Editor::get_editor()->enqueue_gs_train_update([growFraction](void* gs_ptr){
+                            auto* gs = static_cast<GaussianTrainerScene*>(gs_ptr);
+                            gs->getTrainConfig().growFraction = growFraction;
+                        });
+                    }
+                }
+                int refineStopIter = gsTrain->getTrainConfig().refineStopIter;
+                if(ImGuiHelper::Property("StopDensifyAt", refineStopIter, 100, 100000, "Stop densify gaussians that are larger than after these many steps"))
+                {
+                    Editor::get_editor()->enqueue_gs_train_update([refineStopIter](void* gs_ptr){
+                        auto* gs = static_cast<GaussianTrainerScene*>(gs_ptr);
+                        gs->getTrainConfig().refineStopIter = std::max(refineStopIter, 1000);
+                    });
+                }
                 
-                if (ImGuiHelper::Property("Create Sky Model", gsTrain->getTrainConfig().enableBg, "Whether create a sky model for the scene")){
+                bool enableBg = gsTrain->getTrainConfig().enableBg;
+                if (ImGuiHelper::Property("Create Sky Model", enableBg, "Whether create a sky model for the scene")){
+                    Editor::get_editor()->enqueue_gs_train_update([enableBg](void* gs_ptr){
+                        auto* gs = static_cast<GaussianTrainerScene*>(gs_ptr);
+                        gs->getTrainConfig().enableBg = enableBg;
+                    });
                     ImGui::OpenPopup("CreateSkyModel");
                 }
                 ImGuiHelper::messageBox("CreateSkyModel", "Create a sky model for the splat, this will reset the splat, are you sure?", [&]() {
-                    gsTrain->resetGaussian();
+                    Editor::get_editor()->enqueue_gs_train_update([](void* gs_ptr){
+                        auto* gs = static_cast<GaussianTrainerScene*>(gs_ptr);
+                        gs->resetGaussian();
+                    });
                 });
-                if (ImGuiHelper::Property("AntiAliased", gsTrain->getTrainConfig().mipAntiliased, "Whether use anti-aliased rendering")){
+                
+                bool mipAntiliased = gsTrain->getTrainConfig().mipAntiliased;
+                if (ImGuiHelper::Property("AntiAliased", mipAntiliased, "Whether use anti-aliased rendering")){
+                    Editor::get_editor()->enqueue_gs_train_update([mipAntiliased](void* gs_ptr){
+                        auto* gs = static_cast<GaussianTrainerScene*>(gs_ptr);
+                        gs->getTrainConfig().mipAntiliased = mipAntiliased;
+                    });
                     ImGui::OpenPopup("AntiAliased");
                     gaussian.ModelRef->update_from_cpu(
                         gsTrain->getGaussianPositionCpu().data(),
-                        gsTrain->getGaussianSHsCpu().data(),
+                        gsTrain->getGaussianSH0Cpu().data(),
+                        gsTrain->getGaussianSHNCpu().data(),
                         gsTrain->getGaussianOpcaitiesCpu().data(),
                         gsTrain->getGaussianScalingsCpu().data(),
                         gsTrain->getGaussianRotationsCpu().data(),
@@ -823,21 +868,33 @@ namespace MM
                     );
                 }
                 ImGuiHelper::messageBox("AntiAliased", "Modify anti-alias mode will reset the splat, are you sure?", [&]() {
-                    gsTrain->resetGaussian();
+                    Editor::get_editor()->enqueue_gs_train_update([](void* gs_ptr){
+                        auto* gs = static_cast<GaussianTrainerScene*>(gs_ptr);
+                        gs->resetGaussian();
+                    });
                     gaussian.ModelRef->update_from_cpu(
                         gsTrain->getGaussianPositionCpu().data(),
-                        gsTrain->getGaussianSHsCpu().data(),
+                        gsTrain->getGaussianSH0Cpu().data(),
+                        gsTrain->getGaussianSHNCpu().data(),
                         gsTrain->getGaussianOpcaitiesCpu().data(),
                         gsTrain->getGaussianScalingsCpu().data(),
                         gsTrain->getGaussianRotationsCpu().data(),
                         gsTrain->getNumGaussians()
                     );
                 });
-                if(ImGuiHelper::Property("Meshing", gsTrain->getTrainConfig().exportMesh,"Enable/Disable Extracting Meshes")){
-                    gsTrain->getTrainConfig().normalConsistencyLoss = gsTrain->getTrainConfig().exportMesh;
-                    if (gsTrain->getCurrentIterations() > gsTrain->getTrainConfig().refineStopIter) {
-                        gsTrain->resetGaussian();
-                    }
+                
+                bool exportMesh = gsTrain->getTrainConfig().exportMesh;
+                if(ImGuiHelper::Property("Meshing", exportMesh,"Enable/Disable Extracting Meshes")){
+                    int curIter = gsTrain->getCurrentIterations();
+                    int refineStop = gsTrain->getTrainConfig().refineStopIter;
+                    Editor::get_editor()->enqueue_gs_train_update([exportMesh, curIter, refineStop](void* gs_ptr){
+                        auto* gs = static_cast<GaussianTrainerScene*>(gs_ptr);
+                        gs->getTrainConfig().exportMesh = exportMesh;
+                        gs->getTrainConfig().normalConsistencyLoss = exportMesh;
+                        if (curIter > refineStop) {
+                            gs->resetGaussian();
+                        }
+                    });
                 }
    
                 ImGuiHelper::Property("ShowTrainView", gsTrain->ShowTrainView, "Whether visualize training camera view");
@@ -847,7 +904,7 @@ namespace MM
                     ImGuiHelper::Property("ViewNum", numView, ImGuiHelper::PropertyFlag::ReadOnly);
                 }
                 ImGui::Separator();
-                auto& enableFocusRegion = gsTrain->getTrainConfig().enableFocusRegion;
+                bool enableFocusRegion = gsTrain->getTrainConfig().enableFocusRegion;
                 ImGui::NextColumn();
                 ImGui::Columns(1);
                 if (ImGui::TreeNodeEx("FocusRegion", ImGuiTreeNodeFlags_Framed))
@@ -859,20 +916,34 @@ namespace MM
                    ImGui::Indent();
                    float itemWidth = (ImGui::GetContentRegionAvail().x - (ImGui::GetFontSize() * 3.0f)) / 3.0f;
                    bool modified = false;
-                   if (diverse::ImGuiHelper::PropertyVector3("Position", gsTrain->focus_region_position, itemWidth, 0.0f))
+                   
+                   // Temporary variables for UI display and modification
+                   glm::vec3 focus_pos = gsTrain->focus_region_position;
+                   glm::vec3 focus_rot = gsTrain->focus_region_rotation;
+                   glm::vec3 focus_scale = gsTrain->focus_region_scale;
+                   
+                   if (diverse::ImGuiHelper::PropertyVector3("Position", focus_pos, itemWidth, 0.0f))
                        modified = true;
-                   if (diverse::ImGuiHelper::PropertyVector3("Rotation", gsTrain->focus_region_rotation, itemWidth, 0.0f))
+                   if (diverse::ImGuiHelper::PropertyVector3("Rotation", focus_rot, itemWidth, 0.0f))
                        modified = true;
-                   if (diverse::ImGuiHelper::PropertyVector3("Scale", gsTrain->focus_region_scale, itemWidth, 1.0f))
+                   if (diverse::ImGuiHelper::PropertyVector3("Scale", focus_scale, itemWidth, 1.0f))
                        modified = true;
                    //ImGui::NextColumn();
                    ImGui::Columns(2);
                    if (ImGuiHelper::Property("Focus Region", enableFocusRegion))
                    {
-                       if (enableFocusRegion && modified)
-                       {
-                           gsTrain->updateFocusRegion(gsTrain->focus_region_position, gsTrain->focus_region_rotation, gsTrain->focus_region_scale);
-                       }
+                       Editor::get_editor()->enqueue_gs_train_update([enableFocusRegion](void* gs_ptr){
+                           auto* gs = static_cast<GaussianTrainerScene*>(gs_ptr);
+                           gs->getTrainConfig().enableFocusRegion = enableFocusRegion;
+                       });
+                   }
+                   if (modified)
+                   {
+                       // Submit focus region update via queue
+                       Editor::get_editor()->enqueue_gs_train_update([focus_pos, focus_rot, focus_scale](void* gs_ptr){
+                           auto* gs = static_cast<GaussianTrainerScene*>(gs_ptr);
+                           gs->updateFocusRegion(focus_pos, focus_rot, focus_scale);
+                       });
                    }
 
                    ImGui::Unindent();
@@ -892,13 +963,20 @@ namespace MM
                     ImGui::NextColumn();
                     if (ImGui::Button("+"))
                     {
-                        gsTrain->pruenIteraions.emplace_back();
+                        Editor::get_editor()->enqueue_gs_train_update([](void* gs_ptr){
+                            auto* gs = static_cast<GaussianTrainerScene*>(gs_ptr);
+                            gs->pruenIteraions.emplace_back();
+                        });
                     }
                     ImGuiHelper::Tooltip("Add prune operation on this step");
                     ImGui::NextColumn();
                     if( gsTrain->pruenIteraions.size() > 0 && ImGui::Button("-") )
                     {
-                        gsTrain->pruenIteraions.pop_back();
+                        Editor::get_editor()->enqueue_gs_train_update([](void* gs_ptr){
+                            auto* gs = static_cast<GaussianTrainerScene*>(gs_ptr);
+                            if(!gs->pruenIteraions.empty())
+                                gs->pruenIteraions.pop_back();
+                        });
                     }
                     ImGuiHelper::Tooltip("Delete prune operation");
                     ImGui::NextColumn();
@@ -907,7 +985,15 @@ namespace MM
                     auto n = gsTrain->pruenIteraions.size();
                     for (auto i = 0; i < n; i++)
                     {
-                        ImGuiHelper::Property("iteraion", gsTrain->pruenIteraions[i]);
+                        int iter_value = gsTrain->pruenIteraions[i];
+                        if(ImGuiHelper::Property("iteraion", iter_value))
+                        {
+                            Editor::get_editor()->enqueue_gs_train_update([i, iter_value](void* gs_ptr){
+                                auto* gs = static_cast<GaussianTrainerScene*>(gs_ptr);
+                                if(i < gs->pruenIteraions.size())
+                                    gs->pruenIteraions[i] = iter_value;
+                            });
+                        }
                     }
 
                     ImGui::Unindent();
@@ -920,12 +1006,8 @@ namespace MM
                 ImGui::TreePop();
             }
             ImGui::Unindent();
-            ImGui::Text("%s", gsTrain->getCurrentTrainingPhaseName().c_str());
-            ImGui::SameLine();
-            auto size = ImGui::CalcTextSize("ET: %.2f s ");
-            auto sizeOfGfxAPIDropDown = ImGui::GetFontSize() * 8;
-            ImGui::SameLine(ImGui::GetWindowContentRegionMax().x - size.x - ImGui::GetStyle().ItemSpacing.x * 2);
-            ImGui::Text("ET: %.2f s", gsTrain->getEstimateTrainingTime());
+            ImGui::Text("Status: %s", gsTrain->getCurrentTrainingPhaseName().c_str());
+            ImGui::Text("Elpased: %.2f s Remaining: %.2f s ", gsTrain->getTrainingElpasedTime(), gsTrain->getEstimateTrainingTime());
             float progress = gsTrain->getProgressOnCurrentPhase();
             ImGui::ProgressBar(progress);
             ImGui::Separator();
@@ -947,7 +1029,8 @@ namespace MM
                 gsTrain->resetGaussian();
                 gaussian.ModelRef->update_from_cpu(
                     gsTrain->getGaussianPositionCpu().data(),
-                    gsTrain->getGaussianSHsCpu().data(),
+                    gsTrain->getGaussianSH0Cpu().data(),
+                    gsTrain->getGaussianSHNCpu().data(),
                     gsTrain->getGaussianOpcaitiesCpu().data(),
                     gsTrain->getGaussianScalingsCpu().data(),
                     gsTrain->getGaussianRotationsCpu().data(),
@@ -968,18 +1051,15 @@ namespace MM
 						gaussian.ModelRef->rotation(),
                         gaussian.ModelRef->scale(),
                         gaussian.ModelRef->opacity(),
-                        gaussian.ModelRef->sh()
+                        gaussian.ModelRef->sh0(),
+                        gaussian.ModelRef->shn()
                     );
 #endif
                auto& gs_edit = diverse::GaussianEdit::get();
                gs_edit.clear_op_history();
             }
         }
-      /*  ImGui::SetCursorPosX(ButtonPos.x);
-        if (ImGui::Button("Save to file", buttonSize))
-        {
-            diverse::Editor::get_editor()->merge_select_splats();
-        }
+      /*  
         ImGui::SetCursorPosX(ButtonPos.x);
         if (gsTrain && ImGui::Button("Convert to Mesh", buttonSize))
         {
@@ -999,10 +1079,17 @@ namespace MM
         auto& gaussian = reg.get<diverse::PointCloudComponent>(e);
 
         using namespace diverse;
-        //ImGui::Indent();
 
-        auto numGaussian = (u32)gaussian.ModelRef->get_num_points();
-        ImGuiHelper::Property("PointNum", numGaussian, nullptr, ImGuiHelper::PropertyFlag::ReadOnly);
+        if (gaussian.ModelRef)
+        {
+            auto numPoints = (u32)gaussian.ModelRef->get_num_points();
+            ImGuiHelper::Property("PointNum", numPoints, nullptr, ImGuiHelper::PropertyFlag::ReadOnly);
+        }
+        else
+        {
+            ImGui::TextDisabled("No point cloud loaded");
+        }
+        
         ImGui::Columns(1);
         ImGui::Separator();
         ImGui::PopStyleVar();
@@ -1198,12 +1285,109 @@ namespace MM
 
         using namespace diverse;
 
-        float aspect = camera.get_aspect_ratio();
-        if (ImGuiHelper::Property("Aspect", aspect, 0.0f, 10.0f))
-            camera.set_aspect_ratio(aspect);
+        auto* controller = reg.try_get<diverse::EditorCameraController>(e);
+        if(controller)
+        {                
+            // Camera view mode selection - 相机6视图和透视图切换
+            auto* transform = reg.try_get<diverse::maths::Transform>(e);
+            if (transform)
+            {
+                ImGui::TextUnformatted("View Mode");
+                ImGui::NextColumn();
+                ImGui::PushItemWidth(-1);
+                
+                const char* view_modes[] = { 
+                    "Perspective",
+                    "Front", "Back", 
+                    "Left", "Right", 
+                    "Top", "Bottom",
+                    "Fisheye",
+                };
+                
+                auto current_view_mode = camera.get_view_mode();
+                int current_idx = static_cast<int>(current_view_mode);
+                
+                // Fisheye only available in GUT render method
+                const bool isGutMode = (g_render_settings.splat_render_method == SplatRenderMethod::GUT);
+                int maxViewModes = isGutMode ? IM_ARRAYSIZE(view_modes) : IM_ARRAYSIZE(view_modes) - 1;
+                
+                // If not in GUT mode and Fisheye is selected, force to Perspective
+                if (!isGutMode && current_view_mode == diverse::Camera::CameraViewMode::Fisheye)
+                {
+                    current_idx = 0;
+                    camera.set_view_mode(diverse::Camera::CameraViewMode::Perspective);
+                    camera.set_camera_type(Camera::CameraType::Perspective);
+                }
+                
+                if (ImGui::Combo("##ViewMode", &current_idx, view_modes, maxViewModes))
+                {
+                    auto new_mode = static_cast<diverse::Camera::CameraViewMode>(current_idx);
+                    camera.set_view_mode(new_mode);
+                    
+                    // Set appropriate camera mode based on view selection
+                    if (new_mode == diverse::Camera::CameraViewMode::Perspective)
+                    {
+                        camera.set_camera_type(Camera::CameraType::Perspective);
+                        controller->set_current_mode(diverse::EditorCameraMode::ARCBALL);
+                        // Sync focal_point from ortho_view_center when switching back to 3D
+                        controller->sync_focal_point_from_ortho_view(*transform);
+                    }
+                    else if (new_mode == diverse::Camera::CameraViewMode::Fisheye)
+                    {
+                        // Fisheye camera mode
+                        camera.set_camera_type(Camera::CameraType::Fisheye);
+                        controller->set_current_mode(diverse::EditorCameraMode::ARCBALL);
+                        controller->sync_focal_point_from_ortho_view(*transform);
+                    }
+                    else
+                    {
+                        // Set orthographic for all other views
+                        camera.set_camera_type(Camera::CameraType::Orthographic);
+                        // Initialize ortho view center when switching from 3D view
+                        if (controller->get_current_mode() != EditorCameraMode::TWODIM)
+                        {
+                            controller->init_ortho_view_from_current(*transform);
+                        }
+                        controller->set_current_mode(diverse::EditorCameraMode::TWODIM);
+                        
+                        // Set the appropriate view orientation
+                        switch (new_mode)
+                        {
+                            case diverse::Camera::CameraViewMode::Front:
+                                controller->set_front_view(*transform);
+                                break;
+                            case diverse::Camera::CameraViewMode::Back:
+                                controller->set_back_view(*transform);
+                                break;
+                            case diverse::Camera::CameraViewMode::Left:
+                                controller->set_left_view(*transform);
+                                break;
+                            case diverse::Camera::CameraViewMode::Right:
+                                controller->set_right_view(*transform);
+                                break;
+                            case diverse::Camera::CameraViewMode::Top:
+                                controller->set_top_view(*transform);
+                                break;
+                            case diverse::Camera::CameraViewMode::Bottom:
+                                controller->set_buttom_view(*transform);
+                                break;
+                            default:
+                                break;
+                        }
+                    }
+                }
+                
+                ImGui::PopItemWidth();
+                ImGui::NextColumn();
+                // Camera controller speed
+                float speed = controller->get_speed();
+                if (ImGuiHelper::Property("Speed", speed, 0.1f, 200.0f,1.0f,ImGuiHelper::PropertyFlag::SliderValue))
+                    controller->set_speed(speed);
+            }
+        }
 
         float fov = camera.get_fov();
-        if (ImGuiHelper::Property("Fov", fov, 1.0f, 120.0f))
+        if (ImGuiHelper::Property("Fov", fov, 1.0f, 179.0f))
             camera.set_fov(fov);
 
         float n = camera.get_near();
@@ -1215,31 +1399,46 @@ namespace MM
             camera.set_far(f);
 
         float scale = camera.get_scale();
-        if (ImGuiHelper::Property("Scale", scale, 0.0f, 1000.0f))
+        if (ImGuiHelper::Property("Scale", scale, 0.0f, 100.0f))
             camera.set_scale(scale);
 
-        bool ortho = camera.is_orthographic();
-        if (ImGuiHelper::Property("Orthograhic", ortho))
-            camera.set_orthographic(ortho);
+        // Depth of Field, Focus Distance, Aperture - only enabled in GUT mode
+        const bool isGutModeForDof = (g_render_settings.splat_render_method == SplatRenderMethod::GUT);
+        ImGui::BeginDisabled(!isGutModeForDof);
+        
+        bool dofEnabled = camera.is_dof_enabled();
+        if (ImGuiHelper::Property("Depth Of Field", dofEnabled))
+            camera.set_dof_enabled(dofEnabled);
+
+        float focusDistance = camera.get_focus_distance();
+        if (ImGuiHelper::Property("Focus Distance", focusDistance, 0.1f, 1000.0f))
+            camera.set_focus_distance(focusDistance);
 
         float aperture = camera.get_aperture();
-        if (ImGuiHelper::Property("Aperture", aperture, 0.0f, 200.0f))
+        if (ImGuiHelper::Property("Aperture", aperture, 1.0f, 200.0f))
             camera.set_aperture(aperture);
+        
+        ImGui::EndDisabled();
 
-        float shutterSpeed = camera.get_shutter_speed();
-        if (ImGuiHelper::Property("Shutter Speed", shutterSpeed, 0.0f, 1.0f))
-            camera.set_shutter_speed(shutterSpeed);
+        // bool ortho = camera.is_orthographic();
+        // if (ImGuiHelper::Property("Orthograhic", ortho))
+        //     camera.set_orthographic(ortho);
 
-        float sensitivity = camera.get_sensitivity();
-        if (ImGuiHelper::Property("ISO", sensitivity, 0.0f, 5000.0f))
-            camera.set_sensitivity(sensitivity);
+        // float shutterSpeed = camera.get_shutter_speed();
+        // if (ImGuiHelper::Property("Shutter Speed", shutterSpeed, 0.0f, 1.0f))
+        //     camera.set_shutter_speed(shutterSpeed);
 
-        float exposure = camera.get_exposure();
-        ImGuiHelper::Property("Exposure", exposure, 0.0f, 0.0f, 0.0f, ImGuiHelper::PropertyFlag::ReadOnly);
+        // float sensitivity = camera.get_sensitivity();
+        // if (ImGuiHelper::Property("ISO", sensitivity, 0.0f, 5000.0f))
+        //     camera.set_sensitivity(sensitivity);
+
+        // float exposure = camera.get_exposure();
+        // ImGuiHelper::Property("Exposure", exposure, 0.0f, 0.0f, 0.0f, ImGuiHelper::PropertyFlag::ReadOnly);
 
         ImGui::Columns(1);
         ImGui::Separator();
     }
+    
 
 }
 namespace diverse
@@ -1279,8 +1478,9 @@ namespace diverse
         TRIVIAL_COMPONENT(GaussianComponent, "GaussianComponent");
         TRIVIAL_COMPONENT(PointCloudComponent, "PointCloudComponent");
         TRIVIAL_COMPONENT(GaussianCrop, "GaussianCrop");
-        //TRIVIAL_COMPONENT(Camera, "Camera");
+        TRIVIAL_COMPONENT(Camera, "Camera");
         TRIVIAL_COMPONENT(Environment, "Environment");
+        // TRIVIAL_COMPONENT(EditorCameraController, "Camera Controller");
         // TRIVIAL_COMPONENT(PointLightComponent, "PointLightComponent");
         // TRIVIAL_COMPONENT(RectLightComponent, "RectLightComponent");
         // TRIVIAL_COMPONENT(DirectionalLightComponent, "DirectionalLightComponent");

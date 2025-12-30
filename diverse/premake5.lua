@@ -40,6 +40,8 @@ project "diverse"
 		"%{IncludeDir.lua}",
 		"%{IncludeDir.stb}",
 		"%{IncludeDir.ImGui}",
+		"%{IncludeDir.OpenAL}",
+		"%{IncludeDir.Box2D}",
 		"%{IncludeDir.vulkan}",
 		"%{IncludeDir.external}",
 		"%{IncludeDir.spdlog}",
@@ -57,6 +59,7 @@ project "diverse"
 		"%{IncludeDir.pybind11}",
 		"%{IncludeDir.ozz}",
 		"%{IncludeDir.PY3_PATH}/include",
+		"%{IncludeDir.wgpu}",
 	}
 	libdirs
     {
@@ -65,8 +68,6 @@ project "diverse"
 	
 	links
 	{
-		"lua",
-		"box2d",
 		"imgui",
 		"freetype",
 		"SpirvCross",

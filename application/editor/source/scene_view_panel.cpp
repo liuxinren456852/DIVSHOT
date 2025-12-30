@@ -26,7 +26,6 @@
 #include <imgui/imgui_renderer.h>
 #include <events/application_event.h>
 #include <renderer/debug_renderer.h>
-//#include <box2d/box2d.h>
 #include <imgui/imgui_internal.h>
 #include <imgui/Plugins/ImGuizmo.h>
 #ifdef DS_SPLAT_TRAIN
@@ -114,7 +113,13 @@ namespace diverse
         {
             DS_PROFILE_SCOPE("Set Override Camera");
             camera = editor->get_camera();
-            transform = &editor->get_editor_camera_transform();
+            transform = editor->get_editor_camera_transform();
+
+            if (!camera || !transform)
+            {
+                ImGui::End();
+                return;
+            }
 
             app.set_override_camera(camera, transform);
         }
@@ -206,32 +211,32 @@ namespace diverse
             glm::uvec2 view_size = { int(sceneViewSize.x), int(sceneViewSize.y) };
             maths::Ray ray = editor->get_screen_ray(int(clickPos.x), int(clickPos.y), camera, view_size.x, view_size.y);
             editor->select_object(ray);
-
-             auto splat_ent = Entity(editor->get_current_splat_entt(), editor->get_current_scene());
-             if (splat_ent.valid() && splat_ent.active() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
-             {
-                 auto splat_model = splat_ent.get_component<GaussianComponent>().ModelRef;
-                 auto& transform = splat_ent.get_component<maths::Transform>();
-                 maths::Transform& cameraTransform = editor->get_editor_camera_transform();
-                 auto project = camera->get_projection_matrix();
-                 glm::vec3 isect_point;
-                 if (pick_splat(splat_model,
-                     clickPos,
-                     ray,
-                     transform.get_world_matrix(),
-                     cameraTransform,
-                     project,
-                     view_size.x,
-                     view_size.y,
-                     isect_point))
-                 {
-                     auto& pivot_transform = editor->get_pivot()->get_transform();
-                     pivot_transform = transform;
-                     pivot_transform.set_local_position(isect_point);
-                     pivot_transform.set_world_matrix(glm::mat4(1.0f));
-                     GaussianEdit::get().add_place_pivot_op(old_pivot_transform, pivot_transform, editor->get_pivot());
-                 }
-             }
+            auto splat_ent = Entity(editor->get_current_splat_entt(), editor->get_current_scene());
+            if (splat_ent.valid() && splat_ent.active() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
+            {
+                auto splat_model = splat_ent.get_component<GaussianComponent>().ModelRef;
+                auto& transform = splat_ent.get_component<maths::Transform>();
+                maths::Transform* cameraTransform = editor->get_editor_camera_transform();
+                auto project = camera->get_projection_matrix();
+                glm::vec3 isect_point;
+                if (cameraTransform && pick_splat(splat_model,
+                    clickPos,
+                    ray,
+                    transform.get_world_matrix(),
+                    *cameraTransform,
+                    project,
+                    view_size.x,
+                    view_size.y,
+                    isect_point))
+                {
+                    auto& pivot_transform = editor->get_pivot()->get_transform();
+                    pivot_transform = transform;
+                    pivot_transform.set_local_position(isect_point);
+                    pivot_transform.set_world_matrix(glm::mat4(1.0f));
+                    editor->focus_camera(pivot_transform.get_world_position(), 2.0f, 2.0f);
+                    GaussianEdit::get().add_place_pivot_op(old_pivot_transform, pivot_transform, editor->get_pivot());
+                }
+            }
         }
         if (ImGui::IsWindowFocused() && updateCamera && !ImGuizmo::IsUsing() && ImGui::IsItemHovered() && Input::get().get_mouse_mode() == MouseMode::Visible)
         {
@@ -310,7 +315,7 @@ namespace diverse
 
             if (selected)
                 ImGui::PopStyleColor();
-            ImGuiHelper::Tooltip("Translate");
+            ImGuiHelper::Tooltip("Translate T");
         }
 
         {
@@ -324,7 +329,7 @@ namespace diverse
 
             if (selected)
                 ImGui::PopStyleColor();
-            ImGuiHelper::Tooltip("Rotate");
+            ImGuiHelper::Tooltip("Rotate R");
         }
 
         {
@@ -338,7 +343,7 @@ namespace diverse
 
             if (selected)
                 ImGui::PopStyleColor();
-            ImGuiHelper::Tooltip("Scale");
+            ImGuiHelper::Tooltip("Scale Y");
         }
 
         ImGui::SameLine();
@@ -356,7 +361,7 @@ namespace diverse
 
             if (selected)
                 ImGui::PopStyleColor();
-            ImGuiHelper::Tooltip("Universal");
+            ImGuiHelper::Tooltip("Universal U");
         }
 
         ImGui::SameLine();
@@ -382,19 +387,19 @@ namespace diverse
         ImGui::SeparatorEx(ImGuiSeparatorFlags_Vertical);
         ImGui::SameLine();
 
-        {
-           selected = (editor->snap_guizmo() == true);
+        // {
+        //    selected = (editor->snap_guizmo() == true);
 
-           if (selected)
-               ImGui::PushStyleColor(ImGuiCol_Text, ImGuiHelper::GetSelectedColour());
+        //    if (selected)
+        //        ImGui::PushStyleColor(ImGuiCol_Text, ImGuiHelper::GetSelectedColour());
 
-           if (ImGui::Button(U8CStr2CStr(ICON_MDI_MAGNET)))
-               editor->snap_guizmo() = !selected;
+        //    if (ImGui::Button(U8CStr2CStr(ICON_MDI_MAGNET)))
+        //        editor->snap_guizmo() = !selected;
 
-           if (selected)
-               ImGui::PopStyleColor();
-           ImGuiHelper::Tooltip("Snap");
-        }
+        //    if (selected)
+        //        ImGui::PopStyleColor();
+        //    ImGuiHelper::Tooltip("Snap");
+        // }
 
         ImGui::SameLine();
         ImGui::SeparatorEx(ImGuiSeparatorFlags_Vertical);
@@ -484,164 +489,6 @@ namespace diverse
         ImGui::SeparatorEx(ImGuiSeparatorFlags_Vertical);
         ImGui::SameLine();
 
-        if (ImGui::Button(U8CStr2CStr("Camera " ICON_MDI_CAMERA)))
-            ImGui::OpenPopup("CameraPopup");
-        if (ImGui::BeginPopup("CameraPopup"))
-        {
-            auto& camera = *editor->get_camera();
-            bool ortho = camera.is_orthographic();
-
-            ImGui::Columns(2);
-            selected = !ortho;
-            if (selected)
-                ImGui::PushStyleColor(ImGuiCol_Text, ImGuiHelper::GetSelectedColour());
-            if (ImGui::Button(U8CStr2CStr(ICON_MDI_AXIS_ARROW " 3D")))
-            {
-                camera.set_view_mode(Camera::CameraViewMode::Perspective);
-                editor->get_editor_camera_controller().set_current_mode(EditorCameraMode::ARCBALL);
-            }
-            if (selected)
-                ImGui::PopStyleColor();
-            ImGui::NextColumn();
-
-            selected = ortho;
-            if (selected)
-                ImGui::PushStyleColor(ImGuiCol_Text, ImGuiHelper::GetSelectedColour());
-            if (ImGui::Button(U8CStr2CStr(ICON_MDI_ANGLE_RIGHT "2D")))
-            {
-                if (!ortho)
-                {
-                    camera.set_orthographic(true);
-                    camera.set_near(-10.0f);
-                    editor->get_editor_camera_controller().set_current_mode(EditorCameraMode::TWODIM);
-                }
-            }
-            if (selected)
-                ImGui::PopStyleColor();
-            ImGui::NextColumn();
-            auto view_mode = camera.get_view_mode();
-            auto selected_mode = view_mode == Camera::CameraViewMode::Front;
-            if(selected_mode)
-                ImGui::PushStyleColor(ImGuiCol_Text, ImGuiHelper::GetSelectedColour());
-            if (ImGui::Button("Front"))
-            {
-                camera.set_view_mode(Camera::CameraViewMode::Front);
-                editor->get_editor_camera_controller().set_front_view(editor->get_editor_camera_transform());
-            }
-            if(selected_mode)
-                ImGui::PopStyleColor();
-            ImGui::NextColumn();
-            selected_mode = view_mode == Camera::CameraViewMode::Back;
-            if(selected_mode)
-                ImGui::PushStyleColor(ImGuiCol_Text, ImGuiHelper::GetSelectedColour());
-            if(ImGui::Button("Back"))
-            {
-                camera.set_view_mode(Camera::CameraViewMode::Back);
-                editor->get_editor_camera_controller().set_back_view(editor->get_editor_camera_transform());
-            }
-            if(selected_mode)
-                ImGui::PopStyleColor();
-            ImGui::NextColumn();
-            selected_mode = view_mode == Camera::CameraViewMode::Left;
-            if(selected_mode)
-                ImGui::PushStyleColor(ImGuiCol_Text, ImGuiHelper::GetSelectedColour());
-            if (ImGui::Button("Left"))
-            {
-                camera.set_view_mode(Camera::CameraViewMode::Left);
-                editor->get_editor_camera_controller().set_left_view(editor->get_editor_camera_transform());
-            }
-            if(selected_mode)
-                ImGui::PopStyleColor();
-            ImGui::NextColumn();
-            selected_mode = view_mode == Camera::CameraViewMode::Right;
-            if(selected_mode)
-                ImGui::PushStyleColor(ImGuiCol_Text, ImGuiHelper::GetSelectedColour());
-            if (ImGui::Button("Right"))
-            {
-                camera.set_view_mode(Camera::CameraViewMode::Right);
-                editor->get_editor_camera_controller().set_right_view(editor->get_editor_camera_transform());
-            }
-            if(selected_mode)
-                ImGui::PopStyleColor();
-            ImGui::NextColumn();
-            selected_mode = view_mode == Camera::CameraViewMode::Top;
-            if(selected_mode)
-                ImGui::PushStyleColor(ImGuiCol_Text, ImGuiHelper::GetSelectedColour());
-            if (ImGui::Button("Top"))
-            {
-                camera.set_view_mode(Camera::CameraViewMode::Top);
-                editor->get_editor_camera_controller().set_top_view(editor->get_editor_camera_transform());
-            }
-            if(selected_mode)
-                ImGui::PopStyleColor();
-            ImGui::NextColumn();
-            selected_mode = view_mode == Camera::CameraViewMode::Bottom;
-            if(selected_mode)
-                ImGui::PushStyleColor(ImGuiCol_Text, ImGuiHelper::GetSelectedColour());
-            if (ImGui::Button("Buttom"))
-            {
-                camera.set_view_mode(Camera::CameraViewMode::Bottom);
-                editor->get_editor_camera_controller().set_buttom_view(editor->get_editor_camera_transform());
-            }
-            if(selected_mode)
-                ImGui::PopStyleColor();
-            ImGui::NextColumn();
-            if (!ortho)
-            {
-                auto mode = editor->get_editor_camera_controller().get_current_mode();
-                selected = mode == EditorCameraMode::FLYCAM;
-                if (selected)
-                    ImGui::PushStyleColor(ImGuiCol_Text, ImGuiHelper::GetSelectedColour());
-                if (ImGui::Button("Fly"))
-                    editor->get_editor_camera_controller().set_current_mode(EditorCameraMode::FLYCAM);
-                if (selected)
-                    ImGui::PopStyleColor();
-
-                ImGui::NextColumn();
-                selected = mode == EditorCameraMode::ARCBALL;
-                if (selected)
-                    ImGui::PushStyleColor(ImGuiCol_Text, ImGuiHelper::GetSelectedColour());
-                if (ImGui::Button("ArcBall"))
-                    editor->get_editor_camera_controller().set_current_mode(EditorCameraMode::ARCBALL);
-                if (selected)
-                    ImGui::PopStyleColor();
-            }
-            ImGui::Columns(1);
-        /*    ImGui::SliderInt("Width", (int*) & m_Width, 128,2048);
-            ImGui::SliderInt("Height", (int*)&m_Height,128,2048);*/
-            auto fov = editor->get_camera()->get_fov();
-            if (ImGui::DragFloat("Fov",&fov,1.0f,0, 90.0f))
-                editor->get_camera()->set_fov(fov);
-            auto speed = editor->get_editor_camera_controller().get_speed();
-            if (ImGui::DragFloat("Speed", &speed,1.0f, 0, 100.0f))
-                editor->get_editor_camera_controller().set_speed(speed);
-            float Near = editor->get_camera()->get_near();
-            if (ImGui::DragFloat("Near", &Near))
-                editor->get_camera()->set_near(Near);
-            float Far = editor->get_camera()->get_far();
-            if (ImGui::DragFloat("Far", &Far))
-                editor->get_camera()->set_far(Far);
-#ifndef DS_PRODUCTION
-            auto rot = glm::degrees(editor->get_editor_camera_transform().get_local_orientation());
-            if(ImGui::DragFloat3("rot", glm::value_ptr(rot)) )
-            {
-                editor->get_editor_camera_transform().set_local_orientation(glm::radians(rot));
-                editor->get_editor_camera_transform().set_world_matrix(glm::mat4(1.0f));
-            }
-            auto pos = editor->get_editor_camera_transform().get_local_position();
-            if (ImGui::DragFloat3("pos", glm::value_ptr(pos)))
-            {
-                editor->get_editor_camera_transform().set_local_position(pos);
-                editor->get_editor_camera_transform().set_world_matrix(glm::mat4(1.0f));
-            }
-#endif
-            ImGui::EndPopup();
-        }
-       
-        ImGui::SameLine();
-        ImGui::SeparatorEx(ImGuiSeparatorFlags_Vertical);
-        ImGui::SameLine();
-
         if (ImGui::Button(U8CStr2CStr("Splat" ICON_MDI_TOOLBOX_OUTLINE)))
             ImGui::OpenPopup("SplatTool");
         if(ImGui::BeginPopup("SplatTool"))
@@ -659,6 +506,24 @@ namespace diverse
                     if (ImGui::MenuItem(SplatVisTypeStr[i]))
                     {
                         g_render_settings.gs_vis_type = i;
+                    }
+                    ImGui::Unindent();
+                    ImGui::Separator();
+                }
+                ImGui::EndMenu();
+            }
+            
+            // SplatRenderer submenu
+            static const char* splatRendererNames[] = { "Standard", "GUT" };
+            if (ImGui::BeginMenu(" SplatRenderer", true))
+            {
+                for (int i = 0; i < 2; i++)
+                {
+                    ImGui::Indent();
+                    bool isSelected = (static_cast<int>(g_render_settings.splat_render_method) == i);
+                    if (ImGui::MenuItem(splatRendererNames[i], nullptr, isSelected))
+                    {
+                        g_render_settings.splat_render_method = static_cast<SplatRenderMethod>(i);
                     }
                     ImGui::Unindent();
                     ImGui::Separator();
@@ -692,16 +557,16 @@ namespace diverse
         DS_PROFILE_FUNCTION();
         //editor->GetSettings().aspect_ratio = 1.0f;
         current_scene = scene;
-        Application::get().set_override_camera(editor->get_camera(), &editor->get_editor_camera_transform());
+        Application::get().set_override_camera(editor->get_camera(), editor->get_editor_camera_transform());
     }
 
     void SceneViewPanel::draw_gizmos(float width, float height, float xpos, float ypos, Scene* scene)
     {
         DS_PROFILE_FUNCTION();
         Camera* camera = editor->get_camera();
-        maths::Transform& cameraTransform = editor->get_editor_camera_transform();
+        maths::Transform* cameraTransform = editor->get_editor_camera_transform();
         auto& registry = scene->get_registry();
-        glm::mat4 view = glm::inverse(cameraTransform.get_world_matrix());
+        glm::mat4 view = glm::inverse(cameraTransform->get_world_matrix());
         glm::mat4 proj = camera->get_projection_matrix();
         glm::mat4 viewProj = proj * view;
         const maths::Frustum& f = camera->get_frustum(view);
@@ -1352,18 +1217,20 @@ namespace diverse
 
     void SceneViewPanel::draw_splat_focus_box(Camera* camera, maths::Transform* camera_transform,const ImVec2& sceneViewPosition, const ImVec2& sceneViewSize)
     {
+#ifdef DS_SPLAT_TRAIN
         auto splat_ent = Entity(editor->get_current_splat_entt(), editor->get_current_scene());
         if (splat_ent.valid() && splat_ent.active() )
         {
             auto gsTrain = splat_ent.try_get_component<GaussianTrainerScene>();
             if(!gsTrain) return;
             if(!gsTrain->getTrainConfig().enableFocusRegion) return;
-            auto model = splat_ent.get_component<maths::Transform>();
             auto [a,b] = gsTrain->getFocusRegion();
+            auto focusTransform = gsTrain->getFocusRegionTransform();
+            auto model = splat_ent.get_component<maths::Transform>();
             glm::mat4 view = glm::inverse(camera_transform->get_world_matrix());
             glm::mat4 proj = camera->get_projection_matrix();
             auto world2proj = proj * view;
-            auto m = model.get_world_matrix() * gsTrain->getFocusRegionTransform();
+            auto m = model.get_world_matrix() * focusTransform;           
             auto drawList = ImGui::GetWindowDrawList();
             using namespace glm;
             draw_3d_line(drawList, world2proj, m * vec3{ a.x, a.y, a.z }, m * vec3{ a.x, a.y, b.z }, 0xffff4040, sceneViewPosition, sceneViewSize);
@@ -1381,6 +1248,7 @@ namespace diverse
             draw_3d_line(drawList, world2proj, m * vec3{ a.x, a.y, b.z }, m * vec3{ a.x, b.y, b.z }, 0xffffffff, sceneViewPosition, sceneViewSize);
             draw_3d_line(drawList, world2proj, m * vec3{ b.x, a.y, b.z }, m * vec3{ b.x, b.y, b.z }, 0xffffffff, sceneViewPosition, sceneViewSize);
         }
+#endif
     }
     
     void SceneViewPanel::handle_splat_crop(Camera* camera, maths::Transform* camera_transform,const ImVec2& sceneViewPosition, const ImVec2& sceneViewSize)
@@ -1668,32 +1536,32 @@ namespace diverse
 
         const int toolbarHeight = 40; // 调整toolbar高度以适应更多UI元素
         const int toolbarWidth = 60 * (selectedSplats > 100 ? 6 : 5);
-        auto posX = sceneViewPosition.x + sceneViewSize.x /2.0f - (toolbarWidth / 2.0f);
-        ImGui::SetNextWindowPos(ImVec2(posX,sceneViewPosition.y + 10), ImGuiCond_Always);
-        ImGui::SetNextWindowSize(ImVec2(toolbarWidth, toolbarHeight), ImGuiCond_Always);
+        // auto posX = sceneViewPosition.x + sceneViewSize.x /2.0f - (toolbarWidth / 2.0f);
+        // ImGui::SetNextWindowPos(ImVec2(posX,sceneViewPosition.y + 10), ImGuiCond_Always);
+        // ImGui::SetNextWindowSize(ImVec2(toolbarWidth, toolbarHeight), ImGuiCond_Always);
 
-        ImGui::Begin("Toolbar UI", nullptr,
-            ImGuiWindowFlags_NoResize |
-            ImGuiWindowFlags_NoCollapse |
-            ImGuiWindowFlags_NoMove |
-            ImGuiWindowFlags_NoTitleBar |
-            ImGuiWindowFlags_NoScrollbar);
+        // ImGui::Begin("Toolbar UI", nullptr,
+        //     ImGuiWindowFlags_NoResize |
+        //     ImGuiWindowFlags_NoCollapse |
+        //     ImGuiWindowFlags_NoMove |
+        //     ImGuiWindowFlags_NoTitleBar |
+        //     ImGuiWindowFlags_NoScrollbar);
 
-        if (ImGui::Button("Clear", ImVec2(60, 30))) {
-            splat_edit.add_select_none_op();
-        }
+        // if (ImGui::Button("Clear", ImVec2(60, 30))) {
+        //     splat_edit.add_select_none_op();
+        // }
 
-        ImGui::SameLine();
-        if (ImGui::Button("Invert", ImVec2(60, 30))) {
-            splat_edit.add_select_inverse_op();
-        }
+        // ImGui::SameLine();
+        // if (ImGui::Button("Invert", ImVec2(60, 30))) {
+        //     splat_edit.add_select_inverse_op();
+        // }
 
-        ImGui::SameLine();
-        if (ImGui::Button("All", ImVec2(60, 30))) {
-            splat_edit.add_select_all_op();
-        }
+        // ImGui::SameLine();
+        // if (ImGui::Button("All", ImVec2(60, 30))) {
+        //     splat_edit.add_select_all_op();
+        // }
 
-        ImGui::SameLine();
+        // ImGui::SameLine();
 
         // // 3. Min Radius输入框
         // ImGui::AlignTextToFramePadding();
@@ -1715,12 +1583,12 @@ namespace diverse
         // ImGui::DragFloat("##maxOpacity", &max_opacity, 0.01f);
         // ImGui::PopItemWidth();
 
-        ImGui::SameLine();
-        ImGui::Spacing();
-        ImGui::SameLine();
-        ImGui::AlignTextToFramePadding();
-        ImGui::TextUnformatted(splatText.c_str());
-        ImGui::End();
+        // ImGui::SameLine();
+        // ImGui::Spacing();
+        // ImGui::SameLine();
+        // ImGui::AlignTextToFramePadding();
+        // ImGui::TextUnformatted(splatText.c_str());
+        // ImGui::End();
 
         auto editType = splat_edit.get_edit_type();
         if(editType == GaussianEdit::EditType::Sphere || editType == GaussianEdit::EditType::Box)
@@ -1779,8 +1647,8 @@ namespace diverse
             }
             else if(editType == GaussianEdit::EditType::Box)
             {
-                //XScale,YScale,ZScale输入框
-                bool modify = false;
+                //XScale,YScale,ZScale input boxes
+                bool box_modify = false;
                 auto& edit_transform = splat_edit.get_edit_transform();
                 auto scale = edit_transform.get_local_scale();
                 ImGui::AlignTextToFramePadding();
@@ -1788,7 +1656,7 @@ namespace diverse
                 ImGui::SameLine();
                 ImGui::PushItemWidth(55);
                 if (ImGui::DragFloat("##XScale", &scale.x, 0.1f, 0, 400.0f))
-                    modify = true;
+                    box_modify = true;
                 ImGui::PopItemWidth();
 
                 ImGui::SameLine();
@@ -1798,9 +1666,9 @@ namespace diverse
                 ImGui::SameLine();
                 ImGui::PushItemWidth(55);
                 if(ImGui::DragFloat("##YScale", &scale.y, 0.1f, 0, 400.0f))
-                    modify = true;
+                    box_modify = true;
                 ImGui::PopItemWidth();
- 
+
                 ImGui::SameLine();
                 ImGui::Spacing();
                 ImGui::SameLine();
@@ -1808,9 +1676,9 @@ namespace diverse
                 ImGui::SameLine();
                 ImGui::PushItemWidth(55);
                 if(ImGui::DragFloat("##ZScale", &scale.z, 0.1f, 0, 400.0f))
-                    modify = true;
+                    box_modify = true;
                 ImGui::PopItemWidth();
-                if (modify)
+                if (box_modify)
                     edit_transform.set_local_scale(scale);
             }
             ImGui::End();

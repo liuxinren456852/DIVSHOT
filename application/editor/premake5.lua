@@ -1,4 +1,4 @@
-project "SplatX"
+project "divshot"
 	kind "WindowedApp"
 	language "C++"
 	editandcontinue "Off"
@@ -25,6 +25,8 @@ project "SplatX"
 		"%{IncludeDir.stb}",
 		"%{IncludeDir.tinyply}",
 		"%{IncludeDir.ImGui}",
+		"%{IncludeDir.OpenAL}",
+		"%{IncludeDir.Box2D}",
 		"%{IncludeDir.vulkan}",
 		"%{IncludeDir.external}",
 		"%{IncludeDir.spdlog}",
@@ -36,6 +38,8 @@ project "SplatX"
 		"%{IncludeDir.glm}",
 		"%{IncludeDir.diverse}",
 		"%{IncludeDir.diverse_base}",
+		-- "%{IncludeDir.gstrain}",
+		-- "%{IncludeDir.gstrain_utils}",
 		"%{IncludeDir.CUDA_PATH}",
 		"%{IncludeDir.opencv}",
 		"%{IncludeDir.nanobind}",
@@ -50,8 +54,8 @@ project "SplatX"
 	{
 		"diverse_base",
 		"diverse",
-		"lua",
-		"box2d",
+		-- "lua",
+		-- "box2d",
 		"imgui",
 		"freetype",
 		"stbimage",
@@ -88,7 +92,7 @@ project "SplatX"
 	filter "system:windows"
 		cppdialect "C++20"
 		staticruntime "Off"
-		systemversion "13.3"
+		systemversion "latest"
 		conformancemode "on"
 
 		defines
@@ -102,6 +106,7 @@ project "SplatX"
 			"_DISABLE_EXTENDED_ALIGNED_STORAGE",
 			"_SILENCE_CXX17_ITERATOR_BASE_CLASS_DEPRECATION_WARNING",
 			"DS_VOLK",
+			-- "DS_SPLAT_TRAIN"
 		}
 
 		libdirs
@@ -114,11 +119,17 @@ project "SplatX"
 		{
 			"glfw",
 			"OpenGL32",
+			-- "OpenAL32",
+			-- "gstrain",
 			"opencv_world490.lib"
 		}
 
-		postbuildcommands { "xcopy /Y /C \"..\\..\\external\\OpenAL\\libs\\Win32\\OpenAL32.dll\" \"$(OutDir)\"" } 
-
+		postbuildcommands { "xcopy /Y /C \"..\\..\\external\\dxcompiler.dll\" \"$(OutDir)\"" } 
+		postbuildcommands { "xcopy /Y /C \"..\\..\\external\\dxil.dll\" \"$(OutDir)\"" } 
+		postbuildcommands { "xcopy /Y /C \"..\\..\\layouts\\dvui.ini\" \"$(OutDir)\"" } 
+		postbuildcommands { "xcopy /Y /C \"..\\..\\external\\opencv4_9\\linklib\\opencv_videoio_msmf490_64.dll\" \"$(OutDir)\"" } 
+		postbuildcommands { "xcopy /Y /C \"..\\..\\external\\opencv4_9\\linklib\\opencv_world490.dll\" \"$(OutDir)\"" } 
+		postbuildcommands { "xcopy /Y /C \"..\\..\\external\\pkg\\liblink\\zlib1.dll\" \"$(OutDir)\"" } 
 		disablewarnings { 4307 }
 
 	filter "system:macosx"
@@ -130,6 +141,20 @@ project "SplatX"
 		xcodebuildresources 
 		{ 
 			"assets.xcassets", 
+			-- "libMoltenVK.dylib",
+			-- "libmetalirconverter.dylib",
+			-- "gstrain",
+			-- "%{targetdir}/libgstrain.dylib",
+			-- "%{LibraryDir.opencv}/libopencv_videoio.dylib",
+			-- "%{LibraryDir.opencv}/libopencv_core.dylib",
+			-- "%{LibraryDir.opencv}/libopencv_imgproc.dylib",
+			-- "%{LibraryDir.opencv}/libopencv_highgui.dylib",
+			-- "%{LibraryDir.opencv}/libopencv_calib3d.dylib",
+			-- "%{LibraryDir.opencv}/libopencv_imgcodecs.dylib",
+			-- "%{targetdir}/libtorch_cpu.dylib",
+			-- "%{targetdir}/libtorch.dylib",
+			-- "%{targetdir}/libc10.dylib",
+			-- "%{targetdir}/libcolmap_dll.dylib"
 		}
 
 		xcodebuildsettings
@@ -194,6 +219,8 @@ project "SplatX"
 			"OpenAL.framework",
 			"SystemConfiguration.framework",
 			"glfw",
+			-- "libmetalirconverter.dylib",
+			-- "gstrain",
 			"libopencv_videoio.dylib",
 			"libopencv_core.dylib",
 			"libopencv_imgproc.dylib",
